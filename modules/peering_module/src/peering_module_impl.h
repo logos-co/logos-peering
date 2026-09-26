@@ -21,6 +21,7 @@ public:
     ~PeeringModuleImpl() override;
 
     LogosMap configure(const LogosMap& config);
+    LogosMap reevaluateRoutes();
     LogosMap exportLoaded(const std::string& module, int64_t epoch);
     LogosMap exportExited(const std::string& module, int64_t epoch);
     LogosMap facadeLoaded(const std::string& name, int64_t epoch);

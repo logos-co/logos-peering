@@ -77,12 +77,14 @@ bool waitFor(const std::function<bool()>& condition, std::chrono::milliseconds l
 }
 
 struct Runtime {
-    explicit Runtime(const std::string& name) : name(name), dir(freshDir(name))
+    explicit Runtime(const std::string& name, AccessDecision decide = {})
+        : name(name), dir(freshDir(name))
     {
         identity = std::make_shared<FakeIdentity>(dir / "identity");
         PeeringService::Options options;
         options.stateDir = dir / "peering";
         options.identity = identity;
+        options.decide = std::move(decide);
         options.tick = std::chrono::milliseconds(20);
         options.emit = [this](const std::string& event, const json& args) {
             std::lock_guard<std::mutex> lock(mutex);
@@ -981,4 +983,35 @@ TEST(PeeringService, WithoutOperatorTheHostSpeaksForNoEndpoint)
     EXPECT_EQ(b.engine("issueCertificate", json::array({"provider", makeCsrPem(key.get())})).value("error", ""),
               "NOT_AUTHORISED");
     EXPECT_EQ(b.manage("createInvite", json::array({"operator", 600})).value("error", ""), "OPERATOR_DISABLED");
+}
+
+TEST(PeeringService, TheAuthorityDecidesRoutesAndANewPolicyEndsWhatItDenies)
+{
+    std::atomic<int> answer{1}; // 1 allow, 0 deny, -1 no answer
+    Runtime a("laptop");
+    Runtime b("office", [&](const std::string&, const std::string&, const std::string&) -> std::optional<bool> {
+        if (answer < 0) return std::nullopt;
+        return answer == 1;
+    });
+    a.configure();
+    b.configure();
+    pairByInvite(a, b);
+    // No local policy: the authority alone lets the route through.
+    ASSERT_TRUE(b.manage("setExport", json::array({"echo_module", json::object()})).value("ok", false));
+    ASSERT_TRUE(b.engine("exportLoaded", json::array({"echo_module", 1})).value("ok", false));
+    ExportHost host(b, "echo_module");
+    importEcho(a, b, {"wallet"});
+    Dialer facade(a, "echo");
+    ASSERT_TRUE(facade.requestRoute("wallet").contains("ticket"));
+    EXPECT_EQ(b.engine("reevaluateRoutes").value("revoked", -1), 0);
+
+    answer = 0;
+    EXPECT_EQ(b.engine("reevaluateRoutes").value("revoked", -1), 1);
+    EXPECT_TRUE(b.sawEvent("routesRevoked"));
+    EXPECT_TRUE(b.manage("routes")["served"].empty());
+    EXPECT_EQ(facade.requestRoute("wallet").value("error", ""), "NOT_AUTHORISED");
+    // No answer is no route.
+    answer = -1;
+    EXPECT_EQ(facade.requestRoute("wallet").value("error", ""), "NOT_AUTHORISED");
+    EXPECT_EQ(b.call(CallerRef::module("shell"), "reevaluateRoutes").value("error", ""), "NOT_AUTHORISED");
 }

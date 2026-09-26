@@ -42,10 +42,18 @@ Callable only by `peering_module`.
 | `importStates()` | `{name: {state, reason}}`; `configured`, `connecting`, `ready`, `error` |
 | `remotePolicy()` | `{"<uuid>/<consumer>": [target…], "<uuid>/*": […]}`; the target `*` is every export |
 | `exports()` | as the management method below; the engine adds a tls_tcp listener to each at its next load |
+| `reevaluateRoutes()` | `{ok, revoked}`: after the engine gave capability a new remote policy, a peer with a live route it no longer allows loses every route (`routesRevoked`) and asks again for what it may |
 
 Events: `importsChanged()`, `exportsChanged()` (the engine re-reads `exports()`; an export
 takes effect at the module's next load), `importStateChanged(name, state, reason)`,
-`remotePolicyChanged()`.
+`remotePolicyChanged()` (the engine hands `remotePolicy()` to capability, then calls
+`reevaluateRoutes()`).
+
+**Who decides a route.** `capability_module`, the runtime's authority: `peering_module` asks
+core_service's `peering` scope, `evaluateRemoteAccess(peer, consumer, target)`, for each
+route, and the engine keeps capability's copy of the policy current. A consumer the policy
+does not list is refused, and so is every route while no answer comes. The engine also
+confines each import's facade to calling `peering_module` alone.
 
 ### Host methods (exporting hosts, core_service)
 

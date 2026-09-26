@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <memory>
 
 using namespace logos::peering;
 
@@ -78,6 +79,19 @@ private:
     LogosModules& m_modules;
 };
 
+// capability decides each route, asked through core_service's peering scope;
+// no answer refuses the route.
+std::optional<bool> decideByAuthority(logos::LpClient& core, const std::string& peer,
+                                      const std::string& consumer, const std::string& target)
+{
+    logos::CallError error;
+    const nlohmann::json reply = core.invoke(
+        "evaluateRemoteAccess", nlohmann::json::array({peer, consumer, target}), &error, 5000);
+    if (!reply.is_object() || !reply.contains("allow") || !reply.at("allow").is_boolean())
+        return std::nullopt;
+    return reply.at("allow").get<bool>();
+}
+
 } // namespace
 
 PeeringModuleImpl::PeeringModuleImpl() = default;
@@ -94,6 +108,10 @@ void PeeringModuleImpl::onContextReady()
     options.stateDir = std::filesystem::u8path(instancePersistencePath()) / "peering";
     options.identity = std::make_shared<ModuleIdentity>(modules());
     options.emit = [this](const std::string& event, const nlohmann::json& args) { emitEvent(event, args); };
+    auto core = std::make_shared<logos::LpClient>("core_service", "peering_module");
+    options.decide = [core](const std::string& peer, const std::string& consumer, const std::string& target) {
+        return decideByAuthority(*core, peer, consumer, target);
+    };
     try {
         std::atomic_store(&m_service, std::make_shared<PeeringService>(std::move(options)));
     } catch (const std::exception& ex) {
@@ -140,6 +158,8 @@ LogosMap PeeringModuleImpl::configure(const LogosMap& config)
 {
     return forward("configure", LogosList::array({config}));
 }
+
+LogosMap PeeringModuleImpl::reevaluateRoutes() { return forward("reevaluateRoutes", LogosList::array()); }
 LogosMap PeeringModuleImpl::exportLoaded(const std::string& module, int64_t epoch)
 {
     return forward("exportLoaded", LogosList::array({module, epoch}));

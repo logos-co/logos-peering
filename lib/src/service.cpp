@@ -864,6 +864,49 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         return out;
     }
 
+    // The authority's answer when the runtime supplies one, else the local policy.
+    std::optional<bool> decideRoute(const std::string& peer, const std::string& consumer,
+                                    const std::string& target)
+    {
+        if (options.decide) return options.decide(peer, consumer, target);
+        std::lock_guard<std::mutex> lock(m);
+        return policyAllowsLocked(peer, consumer, target);
+    }
+
+    // After a new remote policy reached the authority: a peer with a live route it
+    // no longer allows (or cannot decide) loses them all, and reroutes what it may.
+    json reevaluateRoutes()
+    {
+        std::vector<Route> live;
+        {
+            std::lock_guard<std::mutex> lock(m);
+            for (const auto& e : enrollments.all())
+                for (auto& r : routes.forPeer(e.runtimeInstanceId)) live.push_back(std::move(r));
+        }
+        std::set<std::string> revoke;
+        for (const Route& r : live) {
+            if (revoke.count(r.peer) || r.scope == "operator") continue;
+            bool keep = false;
+            if (r.scope == "look") {
+                std::lock_guard<std::mutex> lock(m);
+                keep = policyNamesPeerLocked(r.peer, r.target);
+            } else {
+                keep = decideRoute(r.peer, r.consumer, r.target).value_or(false);
+            }
+            if (!keep) revoke.insert(r.peer);
+        }
+        for (const std::string& peer : revoke) {
+            std::uint64_t generation = 0;
+            {
+                std::lock_guard<std::mutex> lock(m);
+                generation = routes.revokePeer(peer);
+            }
+            audit.record("routes_revoked", {{"peer", peer}, {"reason", "policy"}});
+            emit("routesRevoked", json::array({peer, static_cast<std::int64_t>(generation)}));
+        }
+        return json{{"ok", true}, {"revoked", revoke.size()}};
+    }
+
     json establishRoute(const std::string& peer, const json* request)
     {
         if (!request) return fault("INVALID_ARGUMENT");
@@ -905,13 +948,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         }
         bool lookOnly = false;
         if (!operatorRoute) {
-            std::optional<bool> allowed;
-            if (options.decide) {
-                allowed = options.decide(peer, consumer, target);
-            } else {
-                std::lock_guard<std::mutex> lock(m);
-                allowed = policyAllowsLocked(peer, consumer, target);
-            }
+            const std::optional<bool> allowed = decideRoute(peer, consumer, target);
             if (!allowed) {
                 audit.record("route_evaluation_failed", {{"peer", peer}, {"consumer", consumer},
                                                          {"target", target}});
@@ -991,7 +1028,8 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
     json invoke(const CallerRef& caller, const std::string& method, const json& args)
     {
         static const std::set<std::string> engine = {
-            "configure", "exportLoaded", "exportExited", "facadeLoaded", "facadeExited"};
+            "configure", "exportLoaded", "exportExited", "facadeLoaded", "facadeExited",
+            "reevaluateRoutes"};
         static const std::set<std::string> engineOrReader = {"imports", "importStates", "remotePolicy",
                                                              "exports"};
         static const std::set<std::string> reads = {"status", "peers", "nearby", "pending", "routes"};
@@ -1038,6 +1076,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
     json read(const CallerRef& caller, const std::string& method, const json& args)
     {
         if (method == "configure") return configure(objectArg(args, 0));
+        if (method == "reevaluateRoutes") return reevaluateRoutes();
         if (method == "exportLoaded" || method == "exportExited" || method == "facadeLoaded"
             || method == "facadeExited")
             return lifecycle(method, textArg(args, 0), intArg(args, 1));
