@@ -46,6 +46,7 @@ public:
     LogosMap pending();
     LogosMap routes();
     LogosMap exports();
+    LogosMap peerExports(const std::string& peer);
     LogosMap openPairingWindow(int64_t seconds);
     LogosMap pairWith(const std::string& host, int64_t port);
     LogosMap confirmPairing(const std::string& id);

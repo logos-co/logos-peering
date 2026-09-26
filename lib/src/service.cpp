@@ -232,6 +232,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         std::string displayId;
         std::string address;
         std::uint16_t controlPort = 0;
+        std::shared_ptr<bool> viaLocalInvite = std::make_shared<bool>(false);
         bool finished = false;
         json result;
         SteadyClock::time_point expires;
@@ -642,12 +643,13 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         const std::string sid = base64url(randomBytes(12));
         Incoming in;
         in.responder = std::make_unique<PairingResponder>(partyLocked(*s),
-            [this, loopback](const std::string& secret) -> std::optional<std::string> {
+            [this, loopback, local = in.viaLocalInvite](const std::string& secret) -> std::optional<std::string> {
                 // The local invite is for this machine only.
                 const auto invite = invites.redeem(secret, [loopback](const IssuedInvite& i) {
                     return loopback || i.issuedBy != kLocalIssuer;
                 });
                 if (!invite) return std::nullopt;
+                *local = invite->issuedBy == kLocalIssuer;
                 audit.record("invite_redeemed", {{"role", invite->role}, {"issued_by", invite->issuedBy}});
                 wake.notify_all();
                 return invite->role;
@@ -717,6 +719,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         if (!body) return fault("INVALID_ARGUMENT");
         json requested;
         json enrolledEvent;
+        bool policyGranted = false;
         std::string error;
         {
             std::lock_guard<std::mutex> lock(m);
@@ -774,6 +777,14 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
                 }
                 audit.record("paired", {{"peer", e.runtimeInstanceId}, {"role", e.role},
                                         {"direction", "incoming"}});
+                // What the local invite allows, the runtime it paired gets.
+                if (*in.viaLocalInvite && !config.localInviteAllow.empty()) {
+                    policy[e.runtimeInstanceId + "/*"] = config.localInviteAllow;
+                    saveLocalLocked();
+                    audit.record("policy_granted", {{"peer", e.runtimeInstanceId},
+                                                    {"targets", config.localInviteAllow}});
+                    policyGranted = true;
+                }
                 in.result = in.responder->result();
                 enrolledEvent = in.result;
             } else {
@@ -785,6 +796,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
             refreshControl();
             emit("peersChanged");
             emit("anchorsChanged");
+            if (policyGranted) emit("remotePolicyChanged");
             return enrolledEvent;
         }
         return json{{"ok", true}};
@@ -821,7 +833,8 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
             const auto it = policy.find(key);
             if (it == policy.end() || !it->is_array()) continue;
             for (const auto& t : *it)
-                if (t.is_string() && t.get<std::string>() == target) return true;
+                if (t.is_string() && (t.get<std::string>() == target || t.get<std::string>() == "*"))
+                    return true;
         }
         return false;
     }
@@ -831,7 +844,8 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         for (const auto& item : policy.items()) {
             if (item.key().rfind(peer + "/", 0) != 0 || !item.value().is_array()) continue;
             for (const auto& t : item.value())
-                if (t.is_string() && t.get<std::string>() == target) return true;
+                if (t.is_string() && (t.get<std::string>() == target || t.get<std::string>() == "*"))
+                    return true;
         }
         return false;
     }
@@ -981,6 +995,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         static const std::set<std::string> engineOrReader = {"imports", "importStates", "remotePolicy",
                                                              "exports"};
         static const std::set<std::string> reads = {"status", "peers", "nearby", "pending", "routes"};
+        static const std::set<std::string> managerReads = {"peerExports"};
         static const std::set<std::string> writes = {
             "openPairingWindow", "pairWith", "confirmPairing", "rejectPairing", "createInvite",
             "redeemInvite", "removePeer", "renamePeer", "setExport", "removeExport", "setImport",
@@ -997,6 +1012,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
             if (engine.count(method)) allowed = isHost;
             else if (engineOrReader.count(method)) allowed = isHost || isReaderLocked(caller);
             else if (reads.count(method)) allowed = isReaderLocked(caller);
+            else if (managerReads.count(method)) allowed = isManagerLocked(caller);
             else if (writes.count(method)) allowed = isManagerLocked(caller);
             else if (method == "issueCertificate")
                 allowed = isExportHostLocked(caller) || isCoreServiceLocked(caller) || isFacadeLocked(caller);
@@ -1034,6 +1050,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         if (method == "nearby") return json{{"nearby", json::array()}};
         if (method == "pending") return pendingDoc();
         if (method == "routes") return routesDoc();
+        if (method == "peerExports") return peerExports(textArg(args, 0));
         if (method == "exports") return exportsDoc();
         if (method == "issueCertificate") return issueCertificate(caller, textArg(args, 0), textArg(args, 1));
         if (method == "sessionAnchors") {
@@ -1348,8 +1365,11 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         {
             std::lock_guard<std::mutex> lock(m);
             rule = importsLocked().at(caller.name);
-            const auto allowedIt = std::find(rule.allowedCallers.begin(), rule.allowedCallers.end(), *consumer);
-            if (*consumer != "runtime" && allowedIt == rule.allowedCallers.end())
+            const auto admits = [&](const std::string& name) {
+                return std::find(rule.allowedCallers.begin(), rule.allowedCallers.end(), name)
+                    != rule.allowedCallers.end();
+            };
+            if (*consumer != "runtime" && !admits(*consumer) && !admits("*"))
                 return fault("NOT_AUTHORISED");
             clientPin = facades[caller.name].clientPin;
             const auto e = enrollments.find(rule.from);
@@ -1363,6 +1383,22 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         reply["addresses"] = peer.addresses;
         reply["anchors"] = peer.trustAnchorPem;
         return reply;
+    }
+
+    // What an enrolled peer exports to this runtime, asked over the control link.
+    json peerExports(const std::optional<std::string>& peerArg)
+    {
+        if (!peerArg) return fault("INVALID_ARGUMENT");
+        std::string peer;
+        {
+            std::lock_guard<std::mutex> lock(m);
+            const auto resolved = resolvePeerLocked(*peerArg);
+            if (!resolved) return fault("NO_SUCH_PEER");
+            peer = *resolved;
+        }
+        const json reply = callPeer(peer, "listExports", json::array());
+        if (isFault(reply)) return reply;
+        return json{{"peer", peer}, {"exports", reply.is_object() ? reply : json::object()}};
     }
 
     json renewImportRoute(const CallerRef& caller, const std::optional<std::string>& route)
@@ -1805,8 +1841,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
             if (consumer != "*" && !isValidConsumer(consumer)) return fault("INVALID_ARGUMENT: " + item.key());
             if (!item.value().is_array()) return fault("INVALID_ARGUMENT: " + item.key());
             for (const auto& target : item.value())
-                if (!target.is_string() || !isValidModuleName(target.get<std::string>())
-                    || isReservedName(target.get<std::string>()))
+                if (!target.is_string() || !isPolicyTarget(target.get<std::string>()))
                     return fault("INVALID_ARGUMENT: " + item.key());
         }
         {

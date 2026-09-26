@@ -40,7 +40,7 @@ Callable only by `peering_module`.
 | `facadeLoaded(name, epoch)` / `facadeExited(name, epoch)` | An import's facade came up or went away. |
 | `imports()` | `{name: {from, module, prefer, version, allowed_callers, events, peer_alias, locked}}` |
 | `importStates()` | `{name: {state, reason}}`; `configured`, `connecting`, `ready`, `error` |
-| `remotePolicy()` | `{"<uuid>/<consumer>": [target…], "<uuid>/*": […]}` |
+| `remotePolicy()` | `{"<uuid>/<consumer>": [target…], "<uuid>/*": […]}`; the target `*` is every export |
 | `exports()` | as the management method below; the engine adds a tls_tcp listener to each at its next load |
 
 Events: `importsChanged()`, `exportsChanged()` (the engine re-reads `exports()`; an export
@@ -79,6 +79,7 @@ Events hosts follow: `anchorsChanged()`, `routesRevoked(peer, generation)`,
 | `pending()` | no — `{pending: [...]}`, pairings in progress with their codes |
 | `routes()` | no — `{served:[…], imports:{…}}` |
 | `exports()` | no — `{module: {events, locked, loaded, port}}` |
+| `peerExports(peer)` | no, but asks the peer, so only managers call it — `{peer, exports: {module: {events, loaded}}}`, what the peer's policy lets this runtime reach |
 | `openPairingWindow(seconds)` | yes — at most 900; 0 closes it |
 | `pairWith(host, port)` | yes — `{id, code, peer_display_id, state}`; confirm with `confirmPairing(id)` once the codes match |
 | `confirmPairing(id)` / `rejectPairing(id)` | yes — for either direction |
@@ -137,10 +138,15 @@ and its root, and says what it came for in its Hello:
 Unknown keys are errors. Entries given here are locked; the same kinds of entries made at
 run time (`setExport`, `setImport`, `setPolicy`) persist in `peering_module`'s state.
 
-`control.local_invite` (`true`, or `{path, role}`) keeps a single-use invite for a
-same-user app on this machine in a 0600 file (default `<state>/local-invite`), naming
+`control.local_invite` (`true`, or `{path, role, allow}`) keeps a single-use invite for a
+same-user app on this machine in a 0600 file (default `<state>/local-invite`; the
+`logoscore` daemon passes `<config dir>/peering/local-invite`), naming
 `127.0.0.1`. It is redeemable over loopback only, and a new one replaces it once used or
-expired (the operator role, which needs `operator`, lasts 15 minutes at a time).
+expired (the operator role, which needs `operator`, lasts 15 minutes at a time). `allow`
+(module names, or `"*"` for every export) becomes the policy entry `"<uuid>/*"` of each
+runtime that pairs through it; without it, pairing grants nothing, as elsewhere.
+
+An import's `allowed_callers` may hold `"*"`: any local consumer may use it.
 
 ## Facades
 

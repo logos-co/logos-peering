@@ -195,6 +195,10 @@ LogosMap PeeringModuleImpl::nearby() { return forward("nearby", LogosList::array
 LogosMap PeeringModuleImpl::pending() { return forward("pending", LogosList::array()); }
 LogosMap PeeringModuleImpl::routes() { return forward("routes", LogosList::array()); }
 LogosMap PeeringModuleImpl::exports() { return forward("exports", LogosList::array()); }
+LogosMap PeeringModuleImpl::peerExports(const std::string& peer)
+{
+    return forward("peerExports", LogosList::array({peer}));
+}
 LogosMap PeeringModuleImpl::openPairingWindow(int64_t seconds)
 {
     return forward("openPairingWindow", LogosList::array({seconds}));

@@ -22,7 +22,7 @@ struct ImportRule {
     std::string module;                      // its module name there
     std::string prefer = "remote";           // remote | local, when a local copy exists
     std::string version;                     // informational in v1
-    std::vector<std::string> allowedCallers; // local consumers it admits
+    std::vector<std::string> allowedCallers; // local consumers it admits ("*": any)
     bool events = false;
 };
 
@@ -38,6 +38,8 @@ struct PeeringConfig {
     bool localInvite = false;
     std::string localInvitePath; // empty: <state>/local-invite
     std::string localInviteRole = "peer";
+    // What a runtime paired through it may call ("*": every export).
+    std::vector<std::string> localInviteAllow;
     bool exports = false;
     std::uint16_t exportPortMin = 0;
     std::uint16_t exportPortMax = 0;
@@ -60,5 +62,7 @@ nlohmann::json toJson(const ExportRule& rule);
 
 // Names peering never imports or exports: the runtime's own and peering's.
 bool isReservedName(const std::string& name);
+// A module a remote policy may name, or "*" for every export.
+bool isPolicyTarget(const std::string& target);
 
 } // namespace logos::peering

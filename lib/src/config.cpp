@@ -108,6 +108,11 @@ bool isReservedName(const std::string& name)
     return reserved.count(lower) || lower.rfind("logos_", 0) == 0 || lower.rfind("peering_", 0) == 0;
 }
 
+bool isPolicyTarget(const std::string& target)
+{
+    return target == "*" || (isValidModuleName(target) && !isReservedName(target));
+}
+
 std::optional<ExportRule> parseExportRule(const json& value, std::string* error)
 {
     ExportRule rule;
@@ -151,7 +156,8 @@ std::optional<ImportRule> parseImportRule(const std::string& name, const json& v
             return std::nullopt;
         }
         for (const auto& caller : *it) {
-            if (!caller.is_string() || !isValidConsumer(caller.get<std::string>())) {
+            if (!caller.is_string()
+                || (caller.get<std::string>() != "*" && !isValidConsumer(caller.get<std::string>()))) {
                 fail(error, "imports." + name + ".allowed_callers holds an invalid consumer");
                 return std::nullopt;
             }
@@ -190,12 +196,25 @@ std::optional<PeeringConfig> parsePeeringConfig(const json& value, std::string* 
         if (const auto local = it->find("local_invite"); local != it->end()) {
             if (local->is_boolean()) {
                 config.localInvite = local->get<bool>();
-            } else if (!onlyKeys(*local, {"path", "role"}, "control.local_invite", error)
+            } else if (!onlyKeys(*local, {"path", "role", "allow"}, "control.local_invite", error)
                        || !readString(*local, "path", config.localInvitePath, error)
                        || !readString(*local, "role", config.localInviteRole, error)) {
                 return std::nullopt;
             } else {
                 config.localInvite = true;
+                if (const auto allow = local->find("allow"); allow != local->end()) {
+                    if (!allow->is_array()) {
+                        fail(error, "control.local_invite.allow is not a list");
+                        return std::nullopt;
+                    }
+                    for (const auto& target : *allow) {
+                        if (!target.is_string() || !isPolicyTarget(target.get<std::string>())) {
+                            fail(error, "control.local_invite.allow holds a module that cannot be exported");
+                            return std::nullopt;
+                        }
+                        config.localInviteAllow.push_back(target.get<std::string>());
+                    }
+                }
             }
             if (config.localInviteRole != "peer" && config.localInviteRole != "operator") {
                 fail(error, "control.local_invite.role is peer or operator");

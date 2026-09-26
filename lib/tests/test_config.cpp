@@ -108,6 +108,8 @@ TEST(Config, ImportsNameARuntimeAndValidConsumers)
     doc = example();
     doc["imports"]["wallet_backend"]["allowed_callers"] = {"runtime", "@op:alice", "wallet_ui"};
     EXPECT_TRUE(parsePeeringConfig(doc));
+    doc["imports"]["wallet_backend"]["allowed_callers"] = {"*"};
+    EXPECT_TRUE(parsePeeringConfig(doc));
 }
 
 TEST(Config, ANameIsNotBothImportedAndExported)
@@ -152,4 +154,17 @@ TEST(Config, ALocalInviteIsOnOrDescribed)
     EXPECT_FALSE(parsePeeringConfig(doc));
     doc["control"]["local_invite"] = {{"ttl", 5}};
     EXPECT_FALSE(parsePeeringConfig(doc));
+}
+
+TEST(Config, ALocalInviteAllowsExportsOnly)
+{
+    json doc = example();
+    doc["control"]["local_invite"] = {{"allow", {"*", "monerod_module"}}};
+    const auto config = parsePeeringConfig(doc);
+    ASSERT_TRUE(config);
+    EXPECT_EQ(config->localInviteAllow, (std::vector<std::string>{"*", "monerod_module"}));
+    for (const json& bad : {json("*"), json({"core_service"}), json({"peering_module"}), json({1})}) {
+        doc["control"]["local_invite"] = {{"allow", bad}};
+        EXPECT_FALSE(parsePeeringConfig(doc)) << bad.dump();
+    }
 }

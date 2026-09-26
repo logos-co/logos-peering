@@ -494,6 +494,24 @@ TEST(PeeringService, RoutesAreOnlyForListedConsumers)
     EXPECT_TRUE(facade.requestRoute("wallet").contains("ticket"));
 }
 
+TEST(PeeringService, APolicyMayNameEveryExport)
+{
+    Runtime a("laptop");
+    Runtime b("office");
+    a.configure();
+    b.configure();
+    pairByInvite(a, b);
+    EXPECT_TRUE(b.manage("setPolicy", json::array({{{a.id() + "/*", {"core_service"}}}})).contains("error"));
+    ASSERT_TRUE(b.manage("setPolicy", json::array({{{a.id() + "/wallet", {"*"}}}})).value("ok", false));
+    ASSERT_TRUE(b.manage("setExport", json::array({"echo_module", json::object()})).value("ok", false));
+    ASSERT_TRUE(b.engine("exportLoaded", json::array({"echo_module", 1})).value("ok", false));
+    ExportHost host(b, "echo_module");
+    importEcho(a, b, {"wallet", "miner"});
+    Dialer facade(a, "echo");
+    EXPECT_TRUE(facade.requestRoute("wallet").contains("ticket"));
+    EXPECT_EQ(facade.requestRoute("miner").value("error", ""), "NOT_AUTHORISED");
+}
+
 TEST(PeeringService, AnUnloadedExportGetsNoRoute)
 {
     Runtime a("laptop");
@@ -730,6 +748,48 @@ TEST(PeeringService, ALocalInvitePairsOverLoopbackAndIsReplaced)
     ASSERT_TRUE(waitFor([&] { return a.manage("peers")["peers"].size() == 1 && b.manage("peers")["peers"].size() == 1; }));
     // Used once, then replaced.
     ASSERT_TRUE(waitFor([&] { return readText(path) != first && !readText(path).empty(); }));
+}
+
+TEST(PeeringService, ALocalInviteGrantsWhatItAllows)
+{
+    Runtime a("basecamp");
+    Runtime b("daemon");
+    a.configure();
+    const fs::path path = b.dir / "local-invite";
+    json config = localInviteConfig(path);
+    config["control"]["local_invite"]["allow"] = {"*"};
+    b.configure(config);
+    ASSERT_TRUE(waitFor([&] { return fs::exists(path); }));
+    const std::string text = readText(path);
+    ASSERT_FALSE(a.manage("redeemInvite", json::array({text.substr(0, text.find('\n'))})).contains("error"));
+    ASSERT_TRUE(waitFor([&] { return a.manage("peers")["peers"].size() == 1 && b.manage("peers")["peers"].size() == 1; }));
+    EXPECT_EQ(b.engine("remotePolicy"), json({{a.id() + "/*", {"*"}}}));
+
+    // Every export is A's to see and, from any of its consumers, to call.
+    ASSERT_TRUE(b.manage("setExport", json::array({"echo_module", json::object()})).value("ok", false));
+    ASSERT_TRUE(b.engine("exportLoaded", json::array({"echo_module", 1})).value("ok", false));
+    const json offered = a.manage("peerExports", json::array({b.id()}));
+    ASSERT_TRUE(offered.contains("exports")) << offered.dump();
+    EXPECT_EQ(offered["exports"], json({{"echo_module", {{"events", false}, {"loaded", true}}}}));
+    ExportHost host(b, "echo_module");
+    importEcho(a, b, {"*"});
+    Dialer facade(a, "echo");
+    EXPECT_TRUE(facade.requestRoute("any_ui").contains("ticket"));
+}
+
+TEST(PeeringService, PeerExportsIsForManagersOfEnrolledPeers)
+{
+    Runtime a("laptop");
+    Runtime b("office");
+    a.configure();
+    b.configure();
+    EXPECT_EQ(a.manage("peerExports", json::array({b.id()})).value("error", ""), "NO_SUCH_PEER");
+    pairByInvite(a, b);
+    // Pairing grants nothing: B offers A no export until its policy names one.
+    ASSERT_TRUE(b.manage("setExport", json::array({"echo_module", json::object()})).value("ok", false));
+    EXPECT_EQ(a.manage("peerExports", json::array({b.id()}))["exports"], json::object());
+    EXPECT_EQ(a.call(CallerRef::named("@peer:" + b.id()), "peerExports", json::array({b.id()}))
+                  .value("error", ""), "NOT_AUTHORISED");
 }
 
 TEST(PeeringService, ALocalInviteIsNotRedeemedFromAnotherAddress)
