@@ -27,6 +27,15 @@ std::optional<Route> RouteTable::find(const std::string& id)
     return it->second;
 }
 
+bool RouteTable::attachTicket(const std::string& id, const std::string& ticketDigest)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = routes_.find(id);
+    if (it == routes_.end()) return false;
+    it->second.ticketDigest = ticketDigest;
+    return true;
+}
+
 std::optional<std::chrono::seconds> RouteTable::renew(const std::string& id, const std::string& peer,
                                                       std::chrono::seconds lifetime)
 {

@@ -13,12 +13,15 @@ find_package(OpenSSL 3.0 REQUIRED)
 find_package(nlohmann_json 3.10 REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(BLAKE3 REQUIRED IMPORTED_TARGET libblake3)
+# The service speaks tls_tcp through the lp_* C ABI; the image that embeds it
+# links the plain runtime.
+find_package(logos-protocol CONFIG REQUIRED)
 
 add_library(logos_peering STATIC
     lib/src/audit.cpp
     lib/src/callers.cpp
     lib/src/certs.cpp
-    lib/src/control_message.cpp
+    lib/src/config.cpp
     lib/src/crypto.cpp
     lib/src/discovery_key.cpp
     lib/src/enrollment.cpp
@@ -30,6 +33,7 @@ add_library(logos_peering STATIC
     lib/src/pairing.cpp
     lib/src/pairing_session.cpp
     lib/src/routes.cpp
+    lib/src/service.cpp
     lib/src/tickets.cpp
 )
 add_library(logos::peering ALIAS logos_peering)
@@ -37,7 +41,8 @@ target_include_directories(logos_peering PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/lib/include>
     $<INSTALL_INTERFACE:include>)
 target_link_libraries(logos_peering PUBLIC
-    OpenSSL::SSL OpenSSL::Crypto nlohmann_json::nlohmann_json PkgConfig::BLAKE3)
+    OpenSSL::SSL OpenSSL::Crypto nlohmann_json::nlohmann_json PkgConfig::BLAKE3
+    logos-protocol::logos_protocol_plain)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(logos_peering PRIVATE -Wall -Wextra -Wpedantic)
 endif()
@@ -48,8 +53,8 @@ if(LOGOS_PEERING_BUILD_TESTS)
     add_executable(logos_peering_tests
         lib/tests/test_audit.cpp
         lib/tests/test_callers.cpp
-        lib/tests/test_control_message.cpp
         lib/tests/test_certs.cpp
+        lib/tests/test_config.cpp
         lib/tests/test_crypto.cpp
         lib/tests/test_discovery_key.cpp
         lib/tests/test_enrollment.cpp
@@ -60,6 +65,7 @@ if(LOGOS_PEERING_BUILD_TESTS)
         lib/tests/test_pairing.cpp
         lib/tests/test_pairing_session.cpp
         lib/tests/test_routes.cpp
+        lib/tests/test_service.cpp
         lib/tests/test_tickets.cpp
     )
     target_link_libraries(logos_peering_tests PRIVATE logos_peering GTest::gtest_main)

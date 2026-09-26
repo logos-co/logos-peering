@@ -77,6 +77,8 @@ public:
 
     bool needsApproval() const { return !invite_ || role_ == "operator"; }
     bool rejected() const { return rejected_; }
+    bool revealed() const { return revealed_; }
+    bool confirmed() const { return confirmed_; }
     // Both sides agreed: send result() and enroll outcome().
     bool ready() const;
     nlohmann::json result() const;

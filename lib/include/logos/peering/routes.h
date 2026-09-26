@@ -22,6 +22,7 @@ struct Route {
     std::string target;    // exported module, or core_service for operator routes
     std::string scope;     // "calls" | "runtime"
     std::string clientPin; // the facade's client leaf
+    std::string ticketDigest;
     std::uint64_t endpointEpoch = 0;
     std::uint64_t generation = 0;
     std::chrono::steady_clock::time_point expires;
@@ -37,6 +38,7 @@ public:
     // Assigns the id and the peer's current generation.
     Route add(Route route, std::chrono::seconds lifetime);
     std::optional<Route> find(const std::string& id);
+    bool attachTicket(const std::string& id, const std::string& ticketDigest);
     // Extends a live route of `peer`; returns the new remaining lifetime.
     std::optional<std::chrono::seconds> renew(const std::string& id, const std::string& peer,
                                               std::chrono::seconds lifetime);

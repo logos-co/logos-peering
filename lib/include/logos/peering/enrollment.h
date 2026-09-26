@@ -20,8 +20,11 @@ struct Enrollment {
     std::string trustAnchorPem;                 // the peer's root certificate
     std::vector<std::string> subjectPublicKeys; // pins of its control keys (1 or 2)
     std::string alias;                          // local label
-    std::string role = "peer";                  // peer | operator
+    std::string role = "peer";                  // what the peer may do here: peer | operator
+    std::string grantedRole = "peer";           // what this runtime may do there
     std::string displayName;                    // what the peer called itself
+    std::vector<std::string> addresses;         // where its control endpoint was reached
+    std::uint16_t controlPort = 0;              // 0: it serves none we know of
 
     std::string anchorPin() const;
     nlohmann::json toJson() const;

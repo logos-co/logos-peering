@@ -53,7 +53,10 @@ nlohmann::json Enrollment::toJson() const
             {"subject_public_keys", subjectPublicKeys},
             {"alias", alias},
             {"role", role},
-            {"display_name", displayName}};
+            {"granted_role", grantedRole},
+            {"display_name", displayName},
+            {"addresses", addresses},
+            {"control_port", controlPort}};
 }
 
 std::optional<Enrollment> Enrollment::fromJson(const nlohmann::json& value, std::string* error)
@@ -68,11 +71,15 @@ std::optional<Enrollment> Enrollment::fromJson(const nlohmann::json& value, std:
         return std::nullopt;
     }
     readField(value, "display_name", e.displayName);
+    readField(value, "granted_role", e.grantedRole);
+    readField(value, "addresses", e.addresses);
+    readField(value, "control_port", e.controlPort);
     const bool keysOk = !e.subjectPublicKeys.empty() && e.subjectPublicKeys.size() <= 2
                         && std::all_of(e.subjectPublicKeys.begin(), e.subjectPublicKeys.end(), isPin);
     if (!isUuid(e.runtimeInstanceId) || e.profile != "logos.remote.tls-tcp" || e.revision == 0
         || (e.status != "active" && e.status != "suspended" && e.status != "revoked") || !keysOk
         || !isValidAlias(e.alias) || (e.role != "peer" && e.role != "operator")
+        || (e.grantedRole != "peer" && e.grantedRole != "operator") || e.addresses.size() > 8
         || (!e.displayName.empty() && !isValidDisplayName(e.displayName))
         || e.anchorPin().empty()) {
         setError(error, "an enrollment is malformed");
