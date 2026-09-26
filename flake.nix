@@ -23,16 +23,24 @@
         inherit system;
         pkgs = import nixpkgs { inherit system; };
       });
-      # Plus "x86_64-windows", cross-built with MinGW on x86_64-linux.
-      forAllTargets = logos-nix.lib.forAllTargets;
+      # logos-nix's targets (native, plus "x86_64-windows" cross-built with MinGW on
+      # x86_64-linux) and "aarch64-android" (its NDK set), for what a runtime there
+      # runs: libpeering, logos_host_remote and the two modules.
+      forAllTargets = f: logos-nix.lib.forAllTargets f // {
+        aarch64-android = f {
+          system = "aarch64-android";
+          pkgs = logos-nix.lib.mobileTargets.aarch64-android.pkgs;
+        };
+      };
 
       # What the Windows runner (logos-windows-ci `tests: true`) runs, one case per process.
       windowsTests = builtins.toFile "libpeering-tests.json" (builtins.toJSON {
         suites = [ { name = "libpeering"; exe = "bin/logos_peering_tests.exe"; timeout = 60; } ];
       });
-      libDeps = pkgs: [
+      # `system`, not hostPlatform.system: Android's says "aarch64-linux".
+      libDeps = { pkgs, system }: [
         pkgs.openssl pkgs.nlohmann_json pkgs.libblake3 pkgs.boost
-        logos-protocol.packages.${pkgs.stdenv.hostPlatform.system}.logos-protocol-plain
+        logos-protocol.packages.${system}.logos-protocol-plain
       ];
 
       libpeering = forAllTargets ({ pkgs, system }: import ./nix/libpeering.nix {
@@ -45,7 +53,7 @@
         version = "0.1.0";
         src = libpeering.${system}.src;
         nativeBuildInputs = [ pkgs.cmake pkgs.ninja pkgs.pkg-config ];
-        buildInputs = libDeps pkgs;
+        buildInputs = libDeps { inherit pkgs system; };
         cmakeFlags = [
           "-DLOGOS_PEERING_BUILD_TESTS=OFF"
           "-DLOGOS_MODULE_LOADER_QT_ROOT=${logos-module-loader-qt.packages.${system}.logos-module-loader-qt-lib}"
@@ -90,9 +98,9 @@
         peering_module = peeringModule.packages.${system}.default;
       });
 
-      devShells = forAllSystems ({ pkgs, ... }: {
+      devShells = forAllSystems ({ pkgs, system }: {
         default = pkgs.mkShell {
-          packages = [ pkgs.cmake pkgs.ninja pkgs.pkg-config pkgs.gtest ] ++ libDeps pkgs;
+          packages = [ pkgs.cmake pkgs.ninja pkgs.pkg-config pkgs.gtest ] ++ libDeps { inherit pkgs system; };
         };
       });
     };

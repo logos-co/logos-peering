@@ -1,7 +1,8 @@
 # libpeering against the logos-protocol plain package it is given: this flake's,
 # or a consumer's own (liblogos builds it against its runtime's protocol).
 # windowsTests: the manifest a Windows runner reads (logos-windows-ci `tests: true`).
-{ pkgs, logosProtocol, withTests ? true, windowsTests ? null }:
+# Tests only where the build machine can run what it builds (not for Android).
+{ pkgs, logosProtocol, withTests ? pkgs.stdenv.buildPlatform.canExecute pkgs.stdenv.hostPlatform, windowsTests ? null }:
 
 let
   lib = pkgs.lib;

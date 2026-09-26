@@ -14,8 +14,8 @@
 
   "nix": {
     "packages": {
-      "build": ["openssl", "libblake3", "boost"],
-      "runtime": []
+      "build": [],
+      "runtime": ["openssl", "libblake3", "boost"]
     },
     "external_libraries": [{"name": "logos_peering"}],
     "cmake": {
