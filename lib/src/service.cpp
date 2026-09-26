@@ -977,9 +977,9 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
     {
         static const std::set<std::string> engine = {
             "configure", "exportLoaded", "exportExited", "facadeLoaded", "facadeExited"};
-        static const std::set<std::string> engineOrReader = {"imports", "importStates", "remotePolicy"};
-        static const std::set<std::string> reads = {"status", "peers", "nearby", "pending", "routes",
-                                                    "exports"};
+        static const std::set<std::string> engineOrReader = {"imports", "importStates", "remotePolicy",
+                                                             "exports"};
+        static const std::set<std::string> reads = {"status", "peers", "nearby", "pending", "routes"};
         static const std::set<std::string> writes = {
             "openPairingWindow", "pairWith", "confirmPairing", "rejectPairing", "createInvite",
             "redeemInvite", "removePeer", "renamePeer", "setExport", "removeExport", "setImport",

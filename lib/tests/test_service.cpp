@@ -436,6 +436,9 @@ TEST(PeeringService, CallersAreGated)
     // Named operators and the shell manage.
     EXPECT_TRUE(b.call(CallerRef::named("alice"), "setExport", export1).value("ok", false));
     EXPECT_TRUE(b.manage("removeExport", json::array({"echo_module"})).value("ok", false));
+    // The engine reads what it acts on.
+    EXPECT_FALSE(b.engine("exports").contains("error"));
+    EXPECT_FALSE(b.engine("imports").contains("error"));
     // Engine methods belong to the runtime alone.
     EXPECT_EQ(b.manage("configure", json::array({json::object()})).value("error", ""), "NOT_AUTHORISED");
     EXPECT_EQ(b.call(CallerRef::module("echo_module"), "exportLoaded", json::array({"echo_module", 1}))

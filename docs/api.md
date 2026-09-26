@@ -41,6 +41,7 @@ Callable only by `peering_module`.
 | `imports()` | `{name: {from, module, prefer, version, allowed_callers, events, peer_alias, locked}}` |
 | `importStates()` | `{name: {state, reason}}`; `configured`, `connecting`, `ready`, `error` |
 | `remotePolicy()` | `{"<uuid>/<consumer>": [target…], "<uuid>/*": […]}` |
+| `exports()` | as the management method below; the engine adds a tls_tcp listener to each at its next load |
 
 Events: `importsChanged()`, `exportsChanged()` (the engine re-reads `exports()`; an export
 takes effect at the module's next load), `importStateChanged(name, state, reason)`,

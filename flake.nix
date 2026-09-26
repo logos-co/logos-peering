@@ -73,7 +73,9 @@
 
       modulePackages = name: module: system:
         lib.mapAttrs' (output: drv: lib.nameValuePair
-          (if output == "default" then name else "${name}-${output}") drv)
+          (if output == "default" then name
+           else if lib.hasPrefix "${name}-" output then output
+           else "${name}-${output}") drv)
           (module.packages.${system} or { });
     in
     {
