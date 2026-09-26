@@ -124,6 +124,7 @@ void PeeringModuleImpl::emitEvent(const std::string& event, const LogosList& arg
         return args.size() > i && args[i].is_number_integer() ? args[i].get<int64_t>() : int64_t(0);
     };
     if (event == "importsChanged") importsChanged();
+    else if (event == "exportsChanged") exportsChanged();
     else if (event == "importStateChanged") importStateChanged(text(0), text(1), text(2));
     else if (event == "remotePolicyChanged") remotePolicyChanged();
     else if (event == "anchorsChanged") anchorsChanged();

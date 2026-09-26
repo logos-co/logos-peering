@@ -42,7 +42,9 @@ Callable only by `peering_module`.
 | `importStates()` | `{name: {state, reason}}`; `configured`, `connecting`, `ready`, `error` |
 | `remotePolicy()` | `{"<uuid>/<consumer>": [target…], "<uuid>/*": […]}` |
 
-Events: `importsChanged()`, `importStateChanged(name, state, reason)`, `remotePolicyChanged()`.
+Events: `importsChanged()`, `exportsChanged()` (the engine re-reads `exports()`; an export
+takes effect at the module's next load), `importStateChanged(name, state, reason)`,
+`remotePolicyChanged()`.
 
 ### Host methods (exporting hosts, core_service)
 

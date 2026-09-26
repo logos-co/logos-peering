@@ -1086,6 +1086,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         if (isFault(control)) return control;
         refreshLocalInvite();
         emit("importsChanged");
+        emit("exportsChanged");
         emit("remotePolicyChanged");
         return json{{"ok", true}, {"runtime_id", s->runtimeId}, {"control_port", boundControlPort()}};
     }
@@ -1739,6 +1740,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
             saveLocalLocked();
         }
         audit.record("export_set", {{"module", *module}});
+        emit("exportsChanged");
         return json{{"ok", true}};
     }
 
@@ -1753,6 +1755,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
             for (const auto& route : routes.forTarget(*module)) routes.remove(route.id);
         }
         audit.record("export_removed", {{"module", *module}});
+        emit("exportsChanged");
         return json{{"ok", true}};
     }
 

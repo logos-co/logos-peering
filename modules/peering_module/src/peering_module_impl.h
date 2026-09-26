@@ -62,6 +62,7 @@ public:
 
 logos_events:
     void importsChanged();
+    void exportsChanged();
     void importStateChanged(const std::string& name, const std::string& state, const std::string& reason);
     void remotePolicyChanged();
     void anchorsChanged();
