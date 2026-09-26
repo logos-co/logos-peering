@@ -8,8 +8,14 @@
   inputs.logos-module-builder.url = "github:logos-co/logos-module-builder/feat/peering";
   inputs.logos-module-builder.inputs.logos-nix.follows = "logos-nix";
   inputs.logos-protocol.follows = "logos-module-builder/logos-protocol";
+  # The host process library logos_host_remote is built on.
+  inputs.logos-module-loader-qt.url = "github:logos-co/logos-module-loader-qt/feat/peering";
+  inputs.logos-module-loader-qt.inputs.logos-nix.follows = "logos-nix";
+  inputs.logos-module-loader-qt.inputs.logos-protocol.follows = "logos-module-builder/logos-protocol";
+  inputs.logos-module-loader-qt.inputs.logos-cpp-sdk.follows = "logos-module-builder/logos-cpp-sdk";
+  inputs.logos-module-loader-qt.inputs.logos-plugin-qt.follows = "logos-module-builder/logos-plugin-qt";
 
-  outputs = { self, nixpkgs, logos-nix, logos-module-builder, logos-protocol }:
+  outputs = { self, nixpkgs, logos-nix, logos-module-builder, logos-protocol, logos-module-loader-qt }:
     let
       lib = nixpkgs.lib;
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
@@ -36,6 +42,19 @@
         doCheck = true;
       });
 
+      hostRemote = forAllSystems ({ pkgs, system }: pkgs.stdenv.mkDerivation {
+        pname = "logos-host-remote";
+        version = "0.1.0";
+        src = libpeering.${system}.src;
+        nativeBuildInputs = [ pkgs.cmake pkgs.ninja pkgs.pkg-config ];
+        buildInputs = libDeps pkgs;
+        cmakeFlags = [
+          "-DLOGOS_PEERING_BUILD_TESTS=OFF"
+          "-DLOGOS_MODULE_LOADER_QT_ROOT=${logos-module-loader-qt.packages.${system}.logos-module-loader-qt-lib}"
+        ];
+        postInstall = "rm -rf $out/lib $out/include";
+      });
+
       # libpeering as the builder's externalLibInputs expect a flake.
       peeringLib = { packages = lib.mapAttrs (system: drv: { default = drv; }) libpeering; };
 
@@ -59,12 +78,14 @@
     in
     {
       packages = forAllSystems ({ system, ... }:
-        { libpeering = libpeering.${system}; default = libpeering.${system}; }
+        { libpeering = libpeering.${system}; default = libpeering.${system};
+          logos_host_remote = hostRemote.${system}; }
         // modulePackages "peering_identity" identityModule system
         // modulePackages "peering_module" peeringModule system);
 
       checks = forAllSystems ({ system, ... }: {
         libpeering = libpeering.${system};
+        logos_host_remote = hostRemote.${system};
         peering_identity = identityModule.packages.${system}.default;
         peering_module = peeringModule.packages.${system}.default;
       });

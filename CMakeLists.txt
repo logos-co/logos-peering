@@ -25,6 +25,7 @@ add_library(logos_peering STATIC
     lib/src/crypto.cpp
     lib/src/discovery_key.cpp
     lib/src/enrollment.cpp
+    lib/src/facade.cpp
     lib/src/fs.cpp
     lib/src/identity.cpp
     lib/src/invite_store.cpp
@@ -71,6 +72,20 @@ if(LOGOS_PEERING_BUILD_TESTS)
     target_link_libraries(logos_peering_tests PRIVATE logos_peering GTest::gtest_main)
     include(GoogleTest)
     gtest_discover_tests(logos_peering_tests DISCOVERY_TIMEOUT 60)
+endif()
+
+# The facade host, when logos-module-loader-qt's package (its host process
+# library) is given.
+set(LOGOS_MODULE_LOADER_QT_ROOT "" CACHE PATH "logos-module-loader-qt package, for logos_host_remote")
+if(LOGOS_MODULE_LOADER_QT_ROOT)
+    add_executable(logos_host_remote host/logos_host_remote.cpp)
+    target_include_directories(logos_host_remote PRIVATE
+        ${LOGOS_MODULE_LOADER_QT_ROOT}/include/logos_module_loader_qt)
+    target_link_libraries(logos_host_remote PRIVATE
+        logos_peering
+        ${LOGOS_MODULE_LOADER_QT_ROOT}/lib/liblogos_host_process.a
+        logos-protocol::logos_protocol_plain)
+    install(TARGETS logos_host_remote RUNTIME DESTINATION bin)
 endif()
 
 include(GNUInstallDirs)

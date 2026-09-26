@@ -817,6 +817,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
                 epoch = state->second.epoch;
             }
         }
+        bool lookOnly = false;
         if (!operatorRoute) {
             std::optional<bool> allowed;
             if (options.decide) {
@@ -830,13 +831,19 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
                                                          {"target", target}});
                 return fault("NOT_AUTHORISED");
             }
-            if (!*allowed) return refuse("policy");
+            // A facade's own session may look and listen wherever one of its
+            // runtime's consumers may call.
+            if (!*allowed && consumer == "runtime") {
+                std::lock_guard<std::mutex> lock(m);
+                lookOnly = policyNamesPeerLocked(peer, target);
+            }
+            if (!*allowed && !lookOnly) return refuse("policy");
         }
         Route route;
         route.peer = peer;
         route.consumer = consumer;
         route.target = target;
-        route.scope = operatorRoute ? "operator" : "calls";
+        route.scope = operatorRoute ? "operator" : lookOnly ? "look" : "calls";
         route.clientPin = clientPin;
         route.endpointEpoch = static_cast<std::uint64_t>(epoch);
         route = routes.add(route, kRouteLifetime);
@@ -1161,7 +1168,8 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
                     {"lifetime_ms", msUntil(route->expires)},
                     {"session", {{"peer", route->peer},
                                  {"route", route->id},
-                                 {"generation", route->generation}}}};
+                                 {"generation", route->generation},
+                                 {"calls", route->scope != "look"}}}};
     }
 
     json noteEndpoints(const CallerRef& caller, const json& endpoints)

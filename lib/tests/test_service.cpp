@@ -3,7 +3,9 @@
 // exporting host.
 #include "logos/peering/service.h"
 
+#include "logos/peering/callers.h"
 #include "logos/peering/certs.h"
+#include "logos/peering/facade.h"
 #include "logos/peering/identity.h"
 #include "logos/peering/invites.h"
 
@@ -210,20 +212,20 @@ struct ExportHost {
     static char* methods(void*) { return heap("[]"); }
 };
 
-// A's facade for an import: dials B's host with what requestRoute returned.
-struct Facade {
+// Stands in for A's facade: dials B's host with what requestRoute returned.
+struct Dialer {
     Runtime& runtime;
     std::string import;
     Credential credential;
     json route;
     lp_client* client = nullptr;
 
-    Facade(Runtime& r, std::string name) : runtime(r), import(std::move(name))
+    Dialer(Runtime& r, std::string name) : runtime(r), import(std::move(name))
     {
         EXPECT_TRUE(credential.obtain(runtime, import, "client"));
     }
 
-    ~Facade()
+    ~Dialer()
     {
         if (client) lp_client_destroy(client);
     }
@@ -239,7 +241,7 @@ struct Facade {
         if (client) lp_client_destroy(client);
         client = lp_client_create(target.c_str(), import.c_str(), R"({"protocol":"tls_tcp"})", nullptr);
         lp_client_set_tls_credential(client, credential.chainPem.c_str(), credential.keyPem().c_str());
-        lp_client_set_session_hook(client, &Facade::dial, &Facade::hello, this);
+        lp_client_set_session_hook(client, &Dialer::dial, &Dialer::hello, this);
         char* out = nullptr;
         char* err = nullptr;
         const int status = lp_invoke(client, "whoami", "[]", 5000, &out, &err);
@@ -251,16 +253,45 @@ struct Facade {
 
     static char* dial(const char*, void* userData)
     {
-        const json& r = static_cast<Facade*>(userData)->route;
+        const json& r = static_cast<Dialer*>(userData)->route;
         return heap(json{{"addresses", r["addresses"]}, {"port", r["port"]},
                          {"server_pin", r["server_pin"]}, {"anchors", r["anchors"]}}.dump());
     }
 
     static char* hello(const char*, void* userData)
     {
-        auto* facade = static_cast<Facade*>(userData);
+        auto* facade = static_cast<Dialer*>(userData);
         return heap(json{{"ticket", facade->route["ticket"]}, {"module", "echo_module"}}.dump());
     }
+};
+
+// A runtime's peering service as the provider its facades call, as themselves.
+struct PeeringProvider {
+    Runtime& runtime;
+    lp_provider* provider = nullptr;
+
+    PeeringProvider(Runtime& r, const std::string& name, const std::string& facade, const std::string& token)
+        : runtime(r)
+    {
+        provider = lp_provider_create(name.c_str(), "[]");
+        EXPECT_EQ(lp_provider_save_token(provider, facade.c_str(), token.c_str()), LP_OK);
+        EXPECT_EQ(lp_provider_register(provider, &PeeringProvider::dispatch, &PeeringProvider::methods,
+                                       nullptr, this), LP_OK);
+        EXPECT_EQ(lp_token_save(name.c_str(), token.c_str()), LP_OK);
+    }
+
+    ~PeeringProvider() { lp_provider_destroy(provider); }
+
+    static char* dispatch(const char* method, const char* args, void* userData)
+    {
+        auto* self = static_cast<PeeringProvider*>(userData);
+        const auto caller = parseStrictObject(lp_current_caller_json());
+        CallerRef ref;
+        if (caller && caller->value("kind", "") == "module") ref = CallerRef::module(caller->value("name", ""));
+        return heap(self->runtime.call(ref, method, json::parse(args ? args : "[]")).dump());
+    }
+
+    static char* methods(void*) { return heap("[]"); }
 };
 
 void exportEcho(Runtime& b, Runtime& a, const std::string& consumer)
@@ -423,7 +454,7 @@ TEST(PeeringService, AFacadeReachesAnExportedModuleAsItsConsumer)
     exportEcho(b, a, "wallet");
     ExportHost host(b, "echo_module");
     importEcho(a, b, {"wallet"});
-    Facade facade(a, "echo");
+    Dialer facade(a, "echo");
 
     const json route = facade.requestRoute("wallet");
     ASSERT_TRUE(route.contains("ticket")) << route.dump();
@@ -447,7 +478,7 @@ TEST(PeeringService, RoutesAreOnlyForListedConsumers)
     exportEcho(b, a, "wallet");
     ExportHost host(b, "echo_module");
     importEcho(a, b, {"wallet", "miner"});
-    Facade facade(a, "echo");
+    Dialer facade(a, "echo");
     // Not an allowed caller of the import on A.
     EXPECT_EQ(facade.requestRoute("stranger").value("error", ""), "NOT_AUTHORISED");
     // Allowed on A, but B's policy does not list it.
@@ -464,7 +495,7 @@ TEST(PeeringService, AnUnloadedExportGetsNoRoute)
     pairByInvite(a, b);
     exportEcho(b, a, "wallet");
     importEcho(a, b, {"wallet"});
-    Facade facade(a, "echo");
+    Dialer facade(a, "echo");
     // Loaded but no host has reported its endpoint.
     EXPECT_EQ(facade.requestRoute("wallet").value("error", ""), "NOT_AUTHORISED");
     {
@@ -485,7 +516,7 @@ TEST(PeeringService, RemovingAPeerRevokesItsRoutes)
     exportEcho(b, a, "wallet");
     ExportHost host(b, "echo_module");
     importEcho(a, b, {"wallet"});
-    Facade facade(a, "echo");
+    Dialer facade(a, "echo");
     ASSERT_TRUE(facade.requestRoute("wallet").contains("ticket"));
     ASSERT_TRUE(b.manage("removePeer", json::array({a.id()})).value("ok", false));
     EXPECT_TRUE(b.sawEvent("routesRevoked"));
@@ -493,4 +524,163 @@ TEST(PeeringService, RemovingAPeerRevokesItsRoutes)
     json who;
     EXPECT_NE(facade.connect("echo_module", &who), LP_OK);
     EXPECT_TRUE(facade.requestRoute("wallet").contains("error"));
+}
+
+namespace {
+
+std::string importState(Runtime& a)
+{
+    const json states = a.engine("importStates");
+    return states.contains("echo") ? states["echo"].value("state", "") : std::string();
+}
+
+// A local consumer of the facade, on the ordinary local transport.
+json callFacade(Facade& facade, const std::string& consumer, const char* method)
+{
+    const std::string token = consumer + "-token";
+    lp_provider_save_token(facade.provider(), consumer.c_str(), token.c_str());
+    lp_token_save("echo", token.c_str());
+    lp_client* client = lp_client_create("echo", consumer.c_str(), nullptr, nullptr);
+    char* out = nullptr;
+    char* err = nullptr;
+    const int status = lp_invoke(client, method, "[]", 10000, &out, &err);
+    json result = status == LP_OK && out ? json::parse(out) : json{{"lp_error", err ? err : "?"}};
+    lp_string_free(out);
+    lp_string_free(err);
+    lp_client_destroy(client);
+    return result;
+}
+
+FacadeOptions facadeOptions()
+{
+    FacadeOptions options;
+    options.name = "echo";
+    options.transportSet = "[]";
+    options.credential = "facade-credential";
+    options.peering = "peering_a";
+    options.retry = std::chrono::milliseconds(100);
+    return options;
+}
+
+} // namespace
+
+TEST(Facade, ServesAnImportAsItsConsumers)
+{
+    Runtime a("laptop");
+    Runtime b("office");
+    a.configure();
+    b.configure();
+    pairByInvite(a, b);
+    exportEcho(b, a, "wallet");
+    ExportHost host(b, "echo_module");
+    importEcho(a, b, {"wallet"});
+    PeeringProvider peering(a, "peering_a", "echo", "facade-token");
+    Facade facade(facadeOptions());
+    std::string error;
+    ASSERT_TRUE(facade.start(error)) << error;
+    ASSERT_TRUE(waitFor([&] { return importState(a) == "ready"; })) << importState(a);
+    EXPECT_TRUE(a.sawEvent("importStateChanged"));
+
+    const json who = callFacade(facade, "wallet", "whoami");
+    EXPECT_EQ(who, json({{"kind", "remote"}, {"peer", a.id()}, {"name", "wallet"}}));
+    facade.stop();
+}
+
+TEST(Facade, ACallerTheImportDoesNotAdmitGetsAnError)
+{
+    Runtime a("laptop");
+    Runtime b("office");
+    a.configure();
+    b.configure();
+    pairByInvite(a, b);
+    exportEcho(b, a, "wallet");
+    ExportHost host(b, "echo_module");
+    importEcho(a, b, {"wallet"});
+    PeeringProvider peering(a, "peering_a", "echo", "facade-token");
+    Facade facade(facadeOptions());
+    std::string error;
+    ASSERT_TRUE(facade.start(error)) << error;
+    ASSERT_TRUE(waitFor([&] { return importState(a) == "ready"; }));
+
+    const json refused = callFacade(facade, "stranger", "whoami");
+    EXPECT_EQ(refused.value("code", ""), "dispatch_failed") << refused.dump();
+    EXPECT_EQ(refused.value("origin", ""), "echo");
+    facade.stop();
+}
+
+TEST(Facade, ReportsAnUnreachablePeer)
+{
+    Runtime a("laptop");
+    Runtime b("office");
+    a.configure();
+    b.configure();
+    pairByInvite(a, b);
+    exportEcho(b, a, "wallet");
+    importEcho(a, b, {"wallet"});
+    // No host serves echo_module on B: no route, so the facade cannot publish.
+    PeeringProvider peering(a, "peering_a", "echo", "facade-token");
+    Facade facade(facadeOptions());
+    std::string error;
+    ASSERT_TRUE(facade.start(error)) << error;
+    ASSERT_TRUE(waitFor([&] { return importState(a) == "error"; })) << importState(a);
+    facade.stop();
+}
+
+namespace {
+
+struct Received {
+    std::mutex mutex;
+    std::vector<std::pair<std::string, std::string>> events;
+};
+
+void onReceived(const char* name, const char* data, void* userData)
+{
+    auto* received = static_cast<Received*>(userData);
+    std::lock_guard<std::mutex> lock(received->mutex);
+    received->events.push_back({name ? name : "", data ? data : ""});
+}
+
+} // namespace
+
+TEST(Facade, CarriesTheEventsAnExportShares)
+{
+    Runtime a("laptop");
+    Runtime b("office");
+    a.configure();
+    b.configure();
+    pairByInvite(a, b);
+    ASSERT_TRUE(b.manage("setExport", json::array({"echo_module", {{"events", true}}})).value("ok", false));
+    ASSERT_TRUE(b.manage("setPolicy", json::array({{{a.id() + "/wallet", {"echo_module"}}}})).value("ok", false));
+    ASSERT_TRUE(b.engine("exportLoaded", json::array({"echo_module", 1})).value("ok", false));
+    ExportHost host(b, "echo_module");
+    const json rule = {{"from", b.id()}, {"module", "echo_module"}, {"allowed_callers", {"wallet"}},
+                       {"events", true}};
+    ASSERT_TRUE(a.manage("setImport", json::array({"echo", rule})).value("ok", false));
+    ASSERT_TRUE(a.engine("facadeLoaded", json::array({"echo", 1})).value("ok", false));
+    PeeringProvider peering(a, "peering_a", "echo", "facade-token");
+    Facade facade(facadeOptions());
+    std::string error;
+    ASSERT_TRUE(facade.start(error)) << error;
+    ASSERT_TRUE(waitFor([&] { return importState(a) == "ready"; }));
+
+    lp_provider_save_token(facade.provider(), "wallet", "wallet-token");
+    lp_token_save("echo", "wallet-token");
+    lp_client* client = lp_client_create("echo", "wallet", nullptr, nullptr);
+    Received received;
+    lp_subscription* subscription = lp_subscribe(client, "tick", &onReceived, &received);
+    ASSERT_NE(subscription, nullptr);
+    const bool arrived = waitFor([&] {
+        lp_provider_emit_event(host.provider, "tick", "[7]");
+        std::lock_guard<std::mutex> lock(received.mutex);
+        return !received.events.empty();
+    });
+    ASSERT_TRUE(arrived);
+    {
+        std::lock_guard<std::mutex> lock(received.mutex);
+        EXPECT_EQ(received.events.front().first, "tick");
+        EXPECT_EQ(json::parse(received.events.front().second), json::array({7}));
+    }
+    lp_unsubscribe(subscription);
+    lp_client_destroy(client);
+    facade.stop();
 }

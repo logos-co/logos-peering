@@ -20,7 +20,7 @@ struct Route {
     std::string peer;      // the consuming runtime's UUID
     std::string consumer;  // module name, "runtime" or "@op:<name>"
     std::string target;    // exported module, or core_service for operator routes
-    std::string scope;     // "calls" | "runtime"
+    std::string scope;     // "calls" | "look" (introspection and events) | "operator"
     std::string clientPin; // the facade's client leaf
     std::string ticketDigest;
     std::uint64_t endpointEpoch = 0;
