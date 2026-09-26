@@ -48,7 +48,7 @@ Events: `importsChanged()`, `importStateChanged(name, state, reason)`, `remotePo
 
 | Method | Notes |
 |---|---|
-| `issueCertificate(role, csrPem)` | `{chain_pem, anchors_pem}`. Hosts get `provider`; facades get `client`, with their import's peer root as anchor. The CSR proves possession of the key. |
+| `issueCertificate(role, csrPem)` | `{chain_pem, anchors_pem, session_options?}`. Hosts get `provider`; facades get `client`, with their import's peer root as anchor. The CSR proves possession of the key. An exporting host also gets `session_options` (`port_min`, `port_max` from `exports.ports`) to apply before its listener starts. |
 | `sessionAnchors()` | `{anchors_pem}`: the enrolled roots an exported endpoint trusts. |
 | `redeemTicket(request)` | The session authenticator's request, unchanged. Returns its reply: `{caller, lifetime_ms, session:{peer, route, generation}}` or `{error}`. A retry from the same connection gets the same answer. |
 | `noteEndpoints(endpoints)` | The host's bound listeners (`lp_provider_endpoints_json`). |

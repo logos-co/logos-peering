@@ -1164,11 +1164,14 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         const PKey key = publicKeyFromSpki(*spki);
         if (!key || !isP256(key.get())) return fault("INVALID_ARGUMENT");
         std::string anchors;
+        json sessionOptions;
         {
             std::lock_guard<std::mutex> lock(m);
             const bool provider = isExportHostLocked(caller) || isCoreServiceLocked(caller);
             if (*role == Role::Provider && provider) {
                 anchors = activeAnchorsLocked();
+                if (isExportHostLocked(caller) && config.exportPortMin && config.exportPortMax)
+                    sessionOptions = {{"port_min", config.exportPortMin}, {"port_max", config.exportPortMax}};
             } else if (*role == Role::Client && isFacadeLocked(caller)) {
                 const auto rule = importsLocked().at(caller.name);
                 const auto e = enrollments.find(rule.from);
@@ -1195,7 +1198,10 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
                 exportStates[caller.name].providerPin = pin;
             }
         }
-        return json{{"chain_pem", *leaf + s->rootPem}, {"anchors_pem", anchors}};
+        json reply = {{"chain_pem", *leaf + s->rootPem}, {"anchors_pem", anchors}};
+        // Where an exported module listens: the configured export ports.
+        if (!sessionOptions.is_null()) reply["session_options"] = sessionOptions;
+        return reply;
     }
 
     json redeemTicket(const CallerRef& caller, const json* request)
