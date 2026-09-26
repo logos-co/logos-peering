@@ -1,0 +1,26 @@
+{
+  "name": "peering_module",
+  "display_name": "Peering",
+  "version": "0.1.0",
+  "description": "Links this runtime with others: pairing, exports and imports, and route tickets for module calls between runtimes.",
+  "author": "Logos Core Team",
+  "type": "core",
+  "category": "system",
+  "interface": "universal",
+  "transport": "qt_remote_plain",
+  "concurrency": "multi",
+  "main": "peering_module_plugin",
+  "dependencies": ["peering_identity"],
+
+  "nix": {
+    "packages": {
+      "build": ["openssl", "libblake3", "boost"],
+      "runtime": []
+    },
+    "external_libraries": [{"name": "logos_peering"}],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": []
+    }
+  }
+}

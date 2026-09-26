@@ -951,7 +951,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         }
         if (method == "status") return status();
         if (method == "peers") return peersDoc();
-        if (method == "nearby") return json::array();
+        if (method == "nearby") return json{{"nearby", json::array()}};
         if (method == "pending") return pendingDoc();
         if (method == "routes") return routesDoc();
         if (method == "exports") return exportsDoc();
@@ -1352,7 +1352,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
                            {"addresses", e.addresses},
                            {"control_port", e.controlPort}});
         }
-        return out;
+        return json{{"peers", out}};
     }
 
     json pendingDoc()
@@ -1372,7 +1372,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
                            {"error", o->error},
                            {"needs_approval", !o->confirmed},
                            {"expires_ms", msUntil(o->expires)}});
-        return out;
+        return json{{"pending", out}};
     }
 
     json routesDoc()

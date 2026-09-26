@@ -1,0 +1,26 @@
+{
+  "name": "peering_identity",
+  "display_name": "Peering identity",
+  "version": "0.1.0",
+  "description": "The runtime's peering identity: its UUID and the root key that certifies peering leaves. Answers only peering_module.",
+  "author": "Logos Core Team",
+  "type": "core",
+  "category": "system",
+  "interface": "universal",
+  "transport": "qt_remote_plain",
+  "concurrency": "single",
+  "main": "peering_identity_plugin",
+  "dependencies": [],
+
+  "nix": {
+    "packages": {
+      "build": ["openssl", "libblake3", "boost"],
+      "runtime": []
+    },
+    "external_libraries": [{"name": "logos_peering"}],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": []
+    }
+  }
+}

@@ -142,7 +142,7 @@ void pairByInvite(Runtime& a, Runtime& b)
     ASSERT_TRUE(invite.contains("invite")) << invite.dump();
     const json started = a.manage("redeemInvite", json::array({invite["invite"]}));
     ASSERT_FALSE(started.contains("error")) << started.dump();
-    ASSERT_TRUE(waitFor([&] { return a.manage("peers").size() == 1 && b.manage("peers").size() == 1; }));
+    ASSERT_TRUE(waitFor([&] { return a.manage("peers")["peers"].size() == 1 && b.manage("peers")["peers"].size() == 1; }));
 }
 
 // A module host's key, certified by its runtime's peering service.
@@ -287,8 +287,8 @@ TEST(PeeringService, AnInviteEnrollsBothSides)
     a.configure();
     b.configure();
     pairByInvite(a, b);
-    const json aPeers = a.manage("peers");
-    const json bPeers = b.manage("peers");
+    const json aPeers = a.manage("peers")["peers"];
+    const json bPeers = b.manage("peers")["peers"];
     EXPECT_EQ(aPeers[0]["runtime_id"], b.id());
     EXPECT_EQ(aPeers[0]["display_name"], "office");
     EXPECT_EQ(aPeers[0]["granted_role"], "peer");
@@ -317,7 +317,7 @@ TEST(PeeringService, ACodePairingWaitsForBothSides)
 
     json incoming;
     ASSERT_TRUE(waitFor([&] {
-        incoming = b.manage("pending");
+        incoming = b.manage("pending")["pending"];
         return incoming.size() == 1;
     }));
     EXPECT_EQ(incoming[0]["code"], code);
@@ -327,11 +327,11 @@ TEST(PeeringService, ACodePairingWaitsForBothSides)
 
     ASSERT_TRUE(a.manage("confirmPairing", json::array({started["id"]})).value("ok", false));
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    EXPECT_EQ(b.manage("peers").size(), 0u);
-    EXPECT_EQ(a.manage("peers").size(), 0u);
+    EXPECT_EQ(b.manage("peers")["peers"].size(), 0u);
+    EXPECT_EQ(a.manage("peers")["peers"].size(), 0u);
 
     ASSERT_TRUE(b.manage("confirmPairing", json::array({incoming[0]["id"]})).value("ok", false));
-    ASSERT_TRUE(waitFor([&] { return a.manage("peers").size() == 1 && b.manage("peers").size() == 1; }));
+    ASSERT_TRUE(waitFor([&] { return a.manage("peers")["peers"].size() == 1 && b.manage("peers")["peers"].size() == 1; }));
 }
 
 TEST(PeeringService, ARejectedPairingEnrollsNobody)
@@ -345,17 +345,17 @@ TEST(PeeringService, ARejectedPairingEnrollsNobody)
     ASSERT_TRUE(started.contains("id")) << started.dump();
     json incoming;
     ASSERT_TRUE(waitFor([&] {
-        incoming = b.manage("pending");
+        incoming = b.manage("pending")["pending"];
         return incoming.size() == 1;
     }));
     a.manage("confirmPairing", json::array({started["id"]}));
     b.manage("rejectPairing", json::array({incoming[0]["id"]}));
     ASSERT_TRUE(waitFor([&] {
-        const json pending = a.manage("pending");
+        const json pending = a.manage("pending")["pending"];
         return pending.size() == 1 && pending[0]["state"] == "failed";
     }));
-    EXPECT_EQ(a.manage("peers").size(), 0u);
-    EXPECT_EQ(b.manage("peers").size(), 0u);
+    EXPECT_EQ(a.manage("peers")["peers"].size(), 0u);
+    EXPECT_EQ(b.manage("peers")["peers"].size(), 0u);
 }
 
 TEST(PeeringService, PairingIsClosedWithoutAWindowOrAnInvite)
@@ -366,7 +366,7 @@ TEST(PeeringService, PairingIsClosedWithoutAWindowOrAnInvite)
     b.configure();
     const json started = a.manage("pairWith", json::array({"127.0.0.1", b.port()}));
     EXPECT_TRUE(started.contains("error"));
-    EXPECT_EQ(b.manage("pending").size(), 0u);
+    EXPECT_EQ(b.manage("pending")["pending"].size(), 0u);
 }
 
 TEST(PeeringService, AnInviteNamingAnotherRootIsRefused)
@@ -383,7 +383,7 @@ TEST(PeeringService, AnInviteNamingAnotherRootIsRefused)
     const json started = a.manage("redeemInvite", json::array({formatInvite(*invite)}));
     ASSERT_TRUE(started.contains("error"));
     EXPECT_NE(started["error"].get<std::string>().find("invite names"), std::string::npos);
-    EXPECT_EQ(b.manage("peers").size(), 0u);
+    EXPECT_EQ(b.manage("peers")["peers"].size(), 0u);
 }
 
 TEST(PeeringService, CallersAreGated)

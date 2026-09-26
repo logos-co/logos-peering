@@ -71,9 +71,9 @@ Events hosts follow: `anchorsChanged()`, `routesRevoked(peer, generation)`,
 | Method | Write? |
 |---|---|
 | `status()` | no — `{runtime_id, display_id, name, control:{enabled, port}, exports, operator, peers, pairing_window_ms, invites}` |
-| `peers()` | no — `[{runtime_id, alias, display_name, display_id, role, granted_role, status, addresses, control_port}]` |
-| `nearby()` | no (discovery; empty for now) |
-| `pending()` | no — pairings in progress, with codes |
+| `peers()` | no — `{peers: [{runtime_id, alias, display_name, display_id, role, granted_role, status, addresses, control_port}]}` |
+| `nearby()` | no — `{nearby: []}` (discovery comes later) |
+| `pending()` | no — `{pending: [...]}`, pairings in progress with their codes |
 | `routes()` | no — `{served:[…], imports:{…}}` |
 | `exports()` | no — `{module: {events, locked, loaded, port}}` |
 | `openPairingWindow(seconds)` | yes — at most 900; 0 closes it |
