@@ -536,26 +536,59 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
             std::lock_guard<std::mutex> lock(m);
             lp_provider_set_tls_credential(control, chain.c_str(), key.c_str());
         } else {
-            const std::string transport = dump(json::array(
-                {{{"protocol", "tls_tcp"}, {"host", cfg.controlHost}, {"port", cfg.controlPort}}}));
-            lp_provider* provider = lp_provider_create("peering_control", transport.c_str());
-            if (!provider) return fault("CONTROL_UNAVAILABLE");
-            if (lp_provider_set_tls_credential(provider, chain.c_str(), key.c_str()) != LP_OK
-                || lp_provider_set_session_authenticator(provider, &Impl::authenticateCb, this) != LP_OK
-                || lp_provider_set_max_concurrent_calls(provider, 8) != LP_OK
-                || lp_provider_register(provider, &Impl::dispatchCb, &Impl::methodsCb, nullptr, this)
-                       != LP_OK) {
-                lp_provider_destroy(provider);
+            // An ephemeral port is picked once and asked for again after a restart:
+            // paired runtimes dial the port they paired with.
+            const std::uint16_t remembered = cfg.controlPort == 0 ? rememberedControlPort() : 0;
+            lp_provider* provider = listen(cfg.controlHost, remembered ? remembered : cfg.controlPort,
+                                           chain, key);
+            if (!provider && remembered) provider = listen(cfg.controlHost, 0, chain, key);
+            if (!provider)
                 return fault("CONTROL_UNAVAILABLE: cannot listen on " + cfg.controlHost + ":"
                              + std::to_string(cfg.controlPort));
+            {
+                std::lock_guard<std::mutex> lock(m);
+                control = provider;
+                controlHost = cfg.controlHost;
+                controlPortWanted = cfg.controlPort;
             }
-            std::lock_guard<std::mutex> lock(m);
-            control = provider;
-            controlHost = cfg.controlHost;
-            controlPortWanted = cfg.controlPort;
+            if (cfg.controlPort == 0) {
+                const std::uint16_t bound = boundControlPort();
+                if (remembered && bound != remembered)
+                    audit.record("control_port_moved", {{"from", remembered}, {"to", bound}});
+                writeFileAtomically(options.stateDir / "control-port", std::to_string(bound) + "\n");
+            }
         }
         refreshControl();
         return json{{"ok", true}, {"port", boundControlPort()}};
+    }
+
+    lp_provider* listen(const std::string& host, std::uint16_t port, const std::string& chain,
+                        const std::string& key)
+    {
+        const std::string transport =
+            dump(json::array({{{"protocol", "tls_tcp"}, {"host", host}, {"port", port}}}));
+        lp_provider* provider = lp_provider_create("peering_control", transport.c_str());
+        if (!provider) return nullptr;
+        if (lp_provider_set_tls_credential(provider, chain.c_str(), key.c_str()) != LP_OK
+            || lp_provider_set_session_authenticator(provider, &Impl::authenticateCb, this) != LP_OK
+            || lp_provider_set_max_concurrent_calls(provider, 8) != LP_OK
+            || lp_provider_register(provider, &Impl::dispatchCb, &Impl::methodsCb, nullptr, this) != LP_OK) {
+            lp_provider_destroy(provider);
+            return nullptr;
+        }
+        return provider;
+    }
+
+    std::uint16_t rememberedControlPort()
+    {
+        const auto text = readFile(options.stateDir / "control-port");
+        if (!text) return 0;
+        try {
+            const int port = std::stoi(*text);
+            return port > 0 && port <= 65535 ? static_cast<std::uint16_t>(port) : 0;
+        } catch (...) {
+            return 0;
+        }
     }
 
     std::uint16_t boundControlPort()
@@ -1421,6 +1454,16 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         json reply = callPeer(rule.from, "establishRoute",
             json::array({{{"consumer", *consumer}, {"target", rule.module}, {"client_pin", clientPin}}}));
         if (isFault(reply) || !reply.is_object()) return isFault(reply) ? reply : fault("MALFORMED_REPLY");
+        {
+            // Renewal asks again whether the import still admits this consumer.
+            std::lock_guard<std::mutex> lock(m);
+            const auto now = SteadyClock::now();
+            for (auto it = importRoutes.begin(); it != importRoutes.end();)
+                it = it->second.expires < now ? importRoutes.erase(it) : std::next(it);
+            importRoutes[reply.value("route", "")] = {
+                caller.name, *consumer,
+                now + std::chrono::milliseconds(reply.value("lifetime_ms", std::int64_t{0}))};
+        }
         reply["addresses"] = peer.addresses;
         reply["anchors"] = peer.trustAnchorPem;
         return reply;
@@ -1491,9 +1534,28 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         std::string from;
         {
             std::lock_guard<std::mutex> lock(m);
-            from = importsLocked().at(caller.name).from;
+            const ImportRule rule = importsLocked().at(caller.name);
+            const auto issued = importRoutes.find(*route);
+            if (issued == importRoutes.end() || issued->second.import != caller.name) return fault("NOT_AUTHORISED");
+            const std::string& consumer = issued->second.consumer;
+            const auto admits = [&](const std::string& name) {
+                return std::find(rule.allowedCallers.begin(), rule.allowedCallers.end(), name)
+                    != rule.allowedCallers.end();
+            };
+            if (consumer != "runtime" && !admits(consumer) && !admits("*")) {
+                importRoutes.erase(issued);
+                return fault("NOT_AUTHORISED");
+            }
+            from = rule.from;
         }
-        return callPeer(from, "renewRoute", json::array({*route}));
+        json renewed = callPeer(from, "renewRoute", json::array({*route}));
+        if (!isFault(renewed)) {
+            std::lock_guard<std::mutex> lock(m);
+            if (const auto issued = importRoutes.find(*route); issued != importRoutes.end())
+                issued->second.expires = SteadyClock::now()
+                    + std::chrono::milliseconds(renewed.value("lifetime_ms", std::int64_t{0}));
+        }
+        return renewed;
     }
 
     json importDescriptor(const CallerRef& caller)
@@ -2063,6 +2125,13 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
 
     std::map<std::string, ExportState> exportStates;
     std::map<std::string, FacadeState> facades;
+    // The routes this runtime's facades asked for, by route id.
+    struct IssuedRoute {
+        std::string import;
+        std::string consumer;
+        SteadyClock::time_point expires;
+    };
+    std::map<std::string, IssuedRoute> importRoutes;
     std::uint16_t corePort = 0;
     std::string corePin;
 

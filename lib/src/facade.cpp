@@ -52,8 +52,24 @@ struct Facade::Impl {
         std::mutex mutex;
         std::string ticket;
         std::string route;
+        std::string refusal; // why the last route was not granted
         Clock::time_point renewAt{};
     };
+
+    // Why the runtime session cannot reach the peer's module, for the import's state.
+    std::string unreachable(Upstream* runtime) const
+    {
+        std::string refusal;
+        if (runtime) {
+            std::lock_guard<std::mutex> lock(runtime->mutex);
+            refusal = runtime->refusal;
+        }
+        // One answer by design: not exported, not running there, or not allowed to us.
+        if (refusal == "NOT_AUTHORISED")
+            return "the peer grants no route to " + module + " (not exported, not running, or not allowed)";
+        if (!refusal.empty()) return "no route to the peer's " + module + ": " + refusal;
+        return "the peer's " + module + " is unreachable";
+    }
 
     explicit Impl(FacadeOptions opts) : options(std::move(opts)) {}
 
@@ -103,10 +119,15 @@ struct Facade::Impl {
         Impl& impl = *upstream->impl;
         const json route = impl.callPeering(
             "requestRoute", json::array({upstream->consumer, impl.options.callTimeout.count()}));
-        if (route.contains("error") || !route.contains("ticket"))
-            return heapCopy(dump(json{{"error", route.value("error", std::string("no route"))}}));
+        if (route.contains("error") || !route.contains("ticket")) {
+            const std::string refusal = route.value("error", std::string("no route"));
+            std::lock_guard<std::mutex> lock(upstream->mutex);
+            upstream->refusal = refusal;
+            return heapCopy(dump(json{{"error", refusal}}));
+        }
         {
             std::lock_guard<std::mutex> lock(upstream->mutex);
+            upstream->refusal.clear();
             upstream->ticket = route.value("ticket", "");
             upstream->route = route.value("route", "");
             upstream->renewAt = Clock::now() + std::chrono::milliseconds(route.value("lifetime_ms", 0) / 2);
@@ -186,7 +207,7 @@ struct Facade::Impl {
         const json interface = json::parse(text ? text : "", nullptr, false);
         lp_string_free(text);
         if (!interface.is_array()) {
-            error = "the peer's " + module + " is unreachable";
+            error = unreachable(runtime);
             return false;
         }
         {
@@ -261,7 +282,7 @@ struct Facade::Impl {
                 Upstream* runtime = upstreamFor("runtime", error);
                 char* text = runtime ? lp_get_methods(runtime->client) : nullptr;
                 if (text) want("ready", {});
-                else want("error", "the peer's " + module + " is unreachable");
+                else want("error", runtime ? unreachable(runtime) : error);
                 lp_string_free(text);
             }
             lock.lock();

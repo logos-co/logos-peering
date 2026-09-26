@@ -78,19 +78,31 @@ bool waitFor(const std::function<bool()>& condition, std::chrono::milliseconds l
 
 struct Runtime {
     explicit Runtime(const std::string& name, AccessDecision decide = {})
-        : name(name), dir(freshDir(name))
+        : name(name), dir(freshDir(name)), decide(std::move(decide))
     {
         identity = std::make_shared<FakeIdentity>(dir / "identity");
+        start();
+    }
+
+    void start()
+    {
         PeeringService::Options options;
         options.stateDir = dir / "peering";
         options.identity = identity;
-        options.decide = std::move(decide);
+        options.decide = decide;
         options.tick = std::chrono::milliseconds(20);
         options.emit = [this](const std::string& event, const json& args) {
             std::lock_guard<std::mutex> lock(mutex);
             events.push_back({event, args});
         };
         service = std::make_unique<PeeringService>(std::move(options));
+    }
+
+    // The same state and identity, a new service: a runtime that restarted.
+    void restart()
+    {
+        service.reset();
+        start();
     }
 
     ~Runtime()
@@ -136,6 +148,7 @@ struct Runtime {
 
     std::string name;
     fs::path dir;
+    AccessDecision decide;
     std::shared_ptr<FakeIdentity> identity;
     std::unique_ptr<PeeringService> service;
     std::mutex mutex;
@@ -764,6 +777,9 @@ TEST(Facade, ReportsAnUnreachablePeer)
     std::string error;
     ASSERT_TRUE(facade.start(error)) << error;
     ASSERT_TRUE(waitFor([&] { return importState(a) == "error"; })) << importState(a);
+    // B's one answer for it, not a network failure.
+    const std::string reason = a.engine("importStates")["echo"].value("reason", "");
+    EXPECT_NE(reason.find("grants no route"), std::string::npos) << reason;
     facade.stop();
 }
 
@@ -1014,4 +1030,43 @@ TEST(PeeringService, TheAuthorityDecidesRoutesAndANewPolicyEndsWhatItDenies)
     answer = -1;
     EXPECT_EQ(facade.requestRoute("wallet").value("error", ""), "NOT_AUTHORISED");
     EXPECT_EQ(b.call(CallerRef::module("shell"), "reevaluateRoutes").value("error", ""), "NOT_AUTHORISED");
+}
+
+TEST(PeeringService, AnEphemeralControlPortIsKeptAcrossARestart)
+{
+    Runtime a("laptop");
+    Runtime b("office");
+    a.configure();
+    b.configure();
+    const std::uint16_t first = b.port();
+    ASSERT_NE(first, 0);
+    pairByInvite(a, b);
+    b.restart();
+    b.configure();
+    EXPECT_EQ(b.port(), first);
+    // A still reaches B where it paired with it.
+    EXPECT_TRUE(a.manage("peerExports", json::array({b.id()})).contains("exports"));
+}
+
+TEST(PeeringService, ARenewalAsksAgainWhetherTheImportAdmitsTheConsumer)
+{
+    Runtime a("laptop");
+    Runtime b("office");
+    a.configure();
+    b.configure();
+    pairByInvite(a, b);
+    exportEcho(b, a, "wallet");
+    ExportHost host(b, "echo_module");
+    importEcho(a, b, {"wallet"});
+    Dialer facade(a, "echo");
+    const json route = facade.requestRoute("wallet");
+    ASSERT_TRUE(route.contains("route")) << route.dump();
+    const auto renew = [&] {
+        return a.call(CallerRef::module("echo"), "renewRoute", json::array({route["route"]}));
+    };
+    EXPECT_TRUE(renew().contains("lifetime_ms")) << renew().dump();
+    // Narrowed: the consumer the route was issued for gets no renewal.
+    const json narrowed = {{"from", b.id()}, {"module", "echo_module"}, {"allowed_callers", {"miner"}}};
+    ASSERT_TRUE(a.manage("setImport", json::array({"echo", narrowed})).value("ok", false));
+    EXPECT_EQ(renew().value("error", ""), "NOT_AUTHORISED");
 }
