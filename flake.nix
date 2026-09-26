@@ -1,15 +1,15 @@
 {
   description = "Logos peering: runtime identity, pairing and routes between Logos instances";
 
-  inputs.logos-nix.url = "github:logos-co/logos-nix";
+  inputs.logos-nix.url = "github:logos-co/logos-nix/feat/standalone-apps";
   inputs.nixpkgs.follows = "logos-nix/nixpkgs";
   # Builds the two bundled modules. Its logos-protocol (tls_tcp and the lp_*
   # C ABI) is the one libpeering compiles against too.
-  inputs.logos-module-builder.url = "github:logos-co/logos-module-builder/feat/peering";
+  inputs.logos-module-builder.url = "github:logos-co/logos-module-builder/feat/standalone-apps";
   inputs.logos-module-builder.inputs.logos-nix.follows = "logos-nix";
   inputs.logos-protocol.follows = "logos-module-builder/logos-protocol";
   # The host process library logos_host_remote is built on.
-  inputs.logos-module-loader-qt.url = "github:logos-co/logos-module-loader-qt/feat/peering";
+  inputs.logos-module-loader-qt.url = "github:logos-co/logos-module-loader-qt/feat/standalone-apps";
   inputs.logos-module-loader-qt.inputs.logos-nix.follows = "logos-nix";
   inputs.logos-module-loader-qt.inputs.logos-protocol.follows = "logos-module-builder/logos-protocol";
   inputs.logos-module-loader-qt.inputs.logos-cpp-sdk.follows = "logos-module-builder/logos-cpp-sdk";
