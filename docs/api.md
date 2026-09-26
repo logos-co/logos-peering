@@ -179,3 +179,8 @@ takes its credential on stdin like `logos_host_plain`, calls `peering_module` as
 `reportImportState`), serves the import's name to local consumers, and forwards each call
 upstream on a session per consumer. A failed upstream call returns
 `{"code":"dispatch_failed","message":"remote/<code>: …","origin":<import>}`.
+
+The import's state follows the facade's own `runtime` session. It is `error` as soon as
+that session's event stream is lost, or a route for it is refused (the reason is then the
+peer's refusal), and `ready` again when the stream re-arms. Without shared events, a health
+check every 15 s and each failed call keep it current.

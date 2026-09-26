@@ -121,8 +121,12 @@ struct Facade::Impl {
             "requestRoute", json::array({upstream->consumer, impl.options.callTimeout.count()}));
         if (route.contains("error") || !route.contains("ticket")) {
             const std::string refusal = route.value("error", std::string("no route"));
-            std::lock_guard<std::mutex> lock(upstream->mutex);
-            upstream->refusal = refusal;
+            {
+                std::lock_guard<std::mutex> lock(upstream->mutex);
+                upstream->refusal = refusal;
+            }
+            // Without its own session the import is down, whatever the health check last saw.
+            if (upstream->consumer == "runtime") impl.want("error", impl.unreachable(upstream));
             return heapCopy(dump(json{{"error", refusal}}));
         }
         {
@@ -186,6 +190,15 @@ struct Facade::Impl {
         if (event && *event) lp_provider_emit_event(impl.provider, event, data ? data : "[]");
     }
 
+    // The runtime session's event stream: lost means the import is down now, armed means back.
+    static void onStreamStatus(int state, unsigned long long, const char*, void* userData)
+    {
+        auto* runtime = static_cast<Upstream*>(userData);
+        if (state == LP_SUB_ARMED) runtime->impl->want("ready", {});
+        else if (state == LP_SUB_LOST || state == LP_SUB_HELD)
+            runtime->impl->want("error", runtime->impl->unreachable(runtime));
+    }
+
     // The state peering_module should hear; the worker sends it.
     void want(const std::string& state, const std::string& reason)
     {
@@ -219,7 +232,10 @@ struct Facade::Impl {
             error = "the facade could not be published (status " + std::to_string(status) + ")";
             return false;
         }
-        if (events) subscription = lp_subscribe(runtime->client, "", &Impl::onEvent, this);
+        if (events) {
+            lp_client_set_subscription_status_cb(runtime->client, &Impl::onStreamStatus, runtime);
+            subscription = lp_subscribe(runtime->client, "", &Impl::onEvent, this);
+        }
         return true;
     }
 

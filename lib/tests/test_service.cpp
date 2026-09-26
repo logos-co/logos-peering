@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <memory>
 #include <sstream>
 #include <mutex>
 #include <thread>
@@ -839,6 +840,43 @@ TEST(Facade, CarriesTheEventsAnExportShares)
     }
     lp_unsubscribe(subscription);
     lp_client_destroy(client);
+    facade.stop();
+}
+
+TEST(Facade, FollowsItsOwnSessionWithoutWaitingForTheHealthCheck)
+{
+    Runtime a("laptop");
+    Runtime b("office");
+    a.configure();
+    b.configure();
+    pairByInvite(a, b);
+    const json granted = {{a.id() + "/wallet", {"echo_module"}}};
+    ASSERT_TRUE(b.manage("setExport", json::array({"echo_module", {{"events", true}}})).value("ok", false));
+    ASSERT_TRUE(b.manage("setPolicy", json::array({granted})).value("ok", false));
+    ASSERT_TRUE(b.engine("exportLoaded", json::array({"echo_module", 1})).value("ok", false));
+    auto host = std::make_unique<ExportHost>(b, "echo_module");
+    const json rule = {{"from", b.id()}, {"module", "echo_module"}, {"allowed_callers", {"wallet"}},
+                       {"events", true}};
+    ASSERT_TRUE(a.manage("setImport", json::array({"echo", rule})).value("ok", false));
+    ASSERT_TRUE(a.engine("facadeLoaded", json::array({"echo", 1})).value("ok", false));
+    PeeringProvider peering(a, "peering_a", "echo", "facade-token");
+    Facade facade(facadeOptions());
+    std::string error;
+    ASSERT_TRUE(facade.start(error)) << error;
+    ASSERT_TRUE(waitFor([&] { return importState(a) == "ready"; }));
+    const auto reason = [&] { return a.engine("importStates")["echo"].value("reason", ""); };
+    // Well inside the 15 s health interval.
+    constexpr auto kPrompt = std::chrono::seconds(5);
+
+    host.reset();
+    EXPECT_TRUE(waitFor([&] { return importState(a) == "error"; }, kPrompt)) << importState(a);
+    ASSERT_TRUE(b.manage("setPolicy", json::array({json::object()})).value("ok", false));
+    EXPECT_TRUE(waitFor([&] { return reason().find("grants no route") != std::string::npos; }, kPrompt))
+        << reason();
+
+    ASSERT_TRUE(b.manage("setPolicy", json::array({granted})).value("ok", false));
+    host = std::make_unique<ExportHost>(b, "echo_module");
+    EXPECT_TRUE(waitFor([&] { return importState(a) == "ready"; }, kPrompt)) << reason();
     facade.stop();
 }
 
