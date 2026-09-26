@@ -30,6 +30,7 @@ add_library(logos_peering STATIC
     lib/src/identity.cpp
     lib/src/invite_store.cpp
     lib/src/invites.cpp
+    lib/src/local_identity.cpp
     lib/src/names.cpp
     lib/src/pairing.cpp
     lib/src/pairing_session.cpp
@@ -38,6 +39,7 @@ add_library(logos_peering STATIC
     lib/src/tickets.cpp
 )
 add_library(logos::peering ALIAS logos_peering)
+set_target_properties(logos_peering PROPERTIES EXPORT_NAME peering)
 target_include_directories(logos_peering PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/lib/include>
     $<INSTALL_INTERFACE:include>)
@@ -89,6 +91,18 @@ if(LOGOS_MODULE_LOADER_QT_ROOT)
 endif()
 
 include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 install(TARGETS logos_peering EXPORT logos_peering_targets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(DIRECTORY lib/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+# find_package(logos_peering): the logos::peering target and what it links.
+install(EXPORT logos_peering_targets NAMESPACE logos::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/logos_peering)
+configure_package_config_file(cmake/logos_peeringConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/logos_peeringConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/logos_peering)
+write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/logos_peeringConfigVersion.cmake
+    COMPATIBILITY SameMinorVersion)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/logos_peeringConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/logos_peeringConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/logos_peering)

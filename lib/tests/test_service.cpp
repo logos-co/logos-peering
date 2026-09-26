@@ -311,6 +311,119 @@ void importEcho(Runtime& a, Runtime& b, const std::vector<std::string>& allowed)
     ASSERT_TRUE(a.engine("facadeLoaded", json::array({"echo", 1})).value("ok", false));
 }
 
+// B's core_service: an operator endpoint the runtime sets up as the host.
+struct CoreServiceHost {
+    Runtime& runtime;
+    PKey key = generateP256();
+    lp_provider* provider = nullptr;
+
+    explicit CoreServiceHost(Runtime& r) : runtime(r)
+    {
+        provider = lp_provider_create("core_service", "[]");
+        EXPECT_EQ(lp_provider_register(provider, &CoreServiceHost::dispatch, &CoreServiceHost::methods,
+                                       nullptr, this), LP_OK);
+        const json issued = runtime.engine("issueCertificate",
+                                           json::array({"provider", makeCsrPem(key.get())}));
+        EXPECT_TRUE(issued.contains("chain_pem")) << issued.dump();
+        if (!issued.contains("chain_pem")) return;
+        EXPECT_EQ(lp_provider_set_tls_credential(provider, issued["chain_pem"].get<std::string>().c_str(),
+                                                 privateKeyPem(key.get()).c_str()), LP_OK);
+        EXPECT_EQ(lp_provider_set_trust_anchors(provider, issued["anchors_pem"].get<std::string>().c_str()),
+                  LP_OK);
+        EXPECT_EQ(lp_provider_set_session_authenticator(provider, &CoreServiceHost::authenticate, this),
+                  LP_OK);
+        // Attached after registration, as the runtime does once peering is up.
+        EXPECT_EQ(lp_provider_add_endpoint(provider, R"({"protocol":"tls_tcp","host":"127.0.0.1","port":0})"),
+                  LP_OK);
+        char* endpoints = lp_provider_endpoints_json(provider);
+        const json noted = runtime.engine("noteEndpoints", json::array({json::parse(endpoints)}));
+        lp_string_free(endpoints);
+        EXPECT_TRUE(noted.value("ok", false)) << noted.dump();
+    }
+
+    ~CoreServiceHost() { lp_provider_destroy(provider); }
+
+    // What the runtime does on anchorsChanged.
+    void refreshAnchors()
+    {
+        const json reply = runtime.engine("sessionAnchors");
+        EXPECT_EQ(lp_provider_set_trust_anchors(provider, reply.value("anchors_pem", "").c_str()), LP_OK);
+    }
+
+    static char* authenticate(const char* request, void* userData)
+    {
+        auto* host = static_cast<CoreServiceHost*>(userData);
+        return heap(host->runtime.engine("redeemTicket", json::array({json::parse(request)})).dump());
+    }
+
+    static char* dispatch(const char* method, const char*, void*)
+    {
+        if (std::strcmp(method, "whoami") == 0) return heap(lp_current_caller_json());
+        return nullptr;
+    }
+
+    static char* methods(void*) { return heap("[]"); }
+};
+
+// A runtime-less operator dialling the route operatorRoute gave it.
+struct OperatorDial {
+    PeeringService::OperatorRoute route;
+    lp_client* client = nullptr;
+
+    explicit OperatorDial(PeeringService::OperatorRoute r) : route(std::move(r)) {}
+    ~OperatorDial()
+    {
+        if (client) lp_client_destroy(client);
+    }
+
+    int whoami(json* result)
+    {
+        client = lp_client_create("core_service", "logosctl", R"({"protocol":"tls_tcp"})", nullptr);
+        lp_client_set_tls_credential(client, route.chainPem.c_str(), route.keyPem.c_str());
+        lp_client_set_session_hook(client, &OperatorDial::dial, &OperatorDial::hello, this);
+        char* out = nullptr;
+        char* err = nullptr;
+        const int status = lp_invoke(client, "whoami", "[]", 5000, &out, &err);
+        if (out && result) *result = json::parse(out);
+        lp_string_free(out);
+        lp_string_free(err);
+        return status;
+    }
+
+    static char* dial(const char*, void* userData)
+    {
+        return heap(static_cast<OperatorDial*>(userData)->route.dial.dump());
+    }
+    static char* hello(const char*, void* userData)
+    {
+        return heap(static_cast<OperatorDial*>(userData)->route.hello.dump());
+    }
+};
+
+json operatorConfig()
+{
+    return {{"control", {{"enabled", true}, {"host", "127.0.0.1"}, {"port", 0}}},
+            {"exports", {{"enabled", true}}},
+            {"operator", true}};
+}
+
+// A redeems B's operator invite, and B approves it.
+void pairAsOperator(Runtime& a, Runtime& b)
+{
+    const json invite = b.manage("createInvite", json::array({"operator", 600}));
+    ASSERT_TRUE(invite.contains("invite")) << invite.dump();
+    ASSERT_FALSE(a.manage("redeemInvite", json::array({invite["invite"]})).contains("error"));
+    std::string id;
+    ASSERT_TRUE(waitFor([&] {
+        const json pending = b.manage("pending")["pending"];
+        for (const auto& p : pending)
+            if (p.value("direction", "") == "incoming" && p.value("needs_approval", false)) id = p["id"];
+        return !id.empty();
+    }));
+    ASSERT_FALSE(b.manage("confirmPairing", json::array({id})).contains("error"));
+    ASSERT_TRUE(waitFor([&] { return a.manage("peers")["peers"].size() == 1; }));
+}
+
 } // namespace
 
 TEST(PeeringService, AnInviteEnrollsBothSides)
@@ -820,4 +933,52 @@ TEST(PeeringService, ALocalInviteIsNotRedeemedFromAnotherAddress)
     const json started = a.manage("redeemInvite", json::array({formatInvite(*invite)}));
     EXPECT_TRUE(started.contains("error")) << started.dump();
     EXPECT_EQ(b.manage("peers")["peers"].size(), 0u);
+}
+
+TEST(PeeringService, AnOperatorReachesCoreServiceAsItsPeer)
+{
+    Runtime a("laptop");
+    Runtime b("office");
+    // Like logosctl: no endpoint of its own.
+    a.configure({{"control", {{"enabled", false}}}, {"exports", {{"enabled", false}}}});
+    b.configure(operatorConfig());
+    CoreServiceHost core(b);
+    pairAsOperator(a, b);
+    core.refreshAnchors();
+    EXPECT_EQ(a.manage("peers")["peers"][0]["granted_role"], "operator");
+    EXPECT_EQ(b.manage("peers")["peers"][0]["role"], "operator");
+
+    std::string error;
+    const auto route = a.service->operatorRoute(b.id(), &error);
+    ASSERT_TRUE(route.has_value()) << error;
+    EXPECT_EQ(route->hello["module"], "core_service");
+    json who;
+    OperatorDial dial(*route);
+    ASSERT_EQ(dial.whoami(&who), LP_OK);
+    EXPECT_EQ(who, json({{"kind", "operator"}, {"name", "@peer:" + a.id()}}));
+}
+
+TEST(PeeringService, OnlyAnOperatorPairingGetsARouteToCoreService)
+{
+    Runtime a("laptop");
+    Runtime b("office");
+    a.configure();
+    b.configure(operatorConfig());
+    CoreServiceHost core(b);
+    pairByInvite(a, b);
+    std::string error;
+    EXPECT_FALSE(a.service->operatorRoute(b.id(), &error).has_value());
+    EXPECT_EQ(error.rfind("NOT_AN_OPERATOR", 0), 0u) << error;
+    EXPECT_FALSE(a.service->operatorRoute("nobody", &error).has_value());
+    EXPECT_EQ(error, "NO_SUCH_PEER");
+}
+
+TEST(PeeringService, WithoutOperatorTheHostSpeaksForNoEndpoint)
+{
+    Runtime b("office");
+    b.configure();
+    const PKey key = generateP256();
+    EXPECT_EQ(b.engine("issueCertificate", json::array({"provider", makeCsrPem(key.get())})).value("error", ""),
+              "NOT_AUTHORISED");
+    EXPECT_EQ(b.manage("createInvite", json::array({"operator", 600})).value("error", ""), "OPERATOR_DISABLED");
 }

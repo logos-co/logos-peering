@@ -1006,28 +1006,30 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
             "requestRoute", "renewRoute", "importDescriptor", "reportImportState"};
 
         const bool isHost = caller.kind == CallerRef::Kind::Host;
+        // The runtime hosts core_service and speaks for its operator endpoint.
+        const CallerRef who = isHost && hostMethods.count(method) ? CallerRef::module("core_service") : caller;
         bool allowed = false;
         {
             std::lock_guard<std::mutex> lock(m);
             if (engine.count(method)) allowed = isHost;
-            else if (engineOrReader.count(method)) allowed = isHost || isReaderLocked(caller);
-            else if (reads.count(method)) allowed = isReaderLocked(caller);
-            else if (managerReads.count(method)) allowed = isManagerLocked(caller);
-            else if (writes.count(method)) allowed = isManagerLocked(caller);
+            else if (engineOrReader.count(method)) allowed = isHost || isReaderLocked(who);
+            else if (reads.count(method)) allowed = isReaderLocked(who);
+            else if (managerReads.count(method)) allowed = isManagerLocked(who);
+            else if (writes.count(method)) allowed = isManagerLocked(who);
             else if (method == "issueCertificate")
-                allowed = isExportHostLocked(caller) || isCoreServiceLocked(caller) || isFacadeLocked(caller);
+                allowed = isExportHostLocked(who) || isCoreServiceLocked(who) || isFacadeLocked(who);
             else if (hostMethods.count(method))
-                allowed = isExportHostLocked(caller) || isCoreServiceLocked(caller);
-            else if (facadeMethods.count(method)) allowed = isFacadeLocked(caller);
+                allowed = isExportHostLocked(who) || isCoreServiceLocked(who);
+            else if (facadeMethods.count(method)) allowed = isFacadeLocked(who);
             else return fault("NO_SUCH_METHOD");
         }
         if (!allowed) return fault("NOT_AUTHORISED");
         try {
             if (writes.count(method)) {
                 std::lock_guard<std::mutex> serial(writeMutex);
-                return write(caller, method, args);
+                return write(who, method, args);
             }
-            return read(caller, method, args);
+            return read(who, method, args);
         } catch (const std::exception& ex) {
             return fault(std::string("FAILED: ") + ex.what());
         }
@@ -1383,6 +1385,49 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         reply["addresses"] = peer.addresses;
         reply["anchors"] = peer.trustAnchorPem;
         return reply;
+    }
+
+    std::optional<PeeringService::OperatorRoute> operatorRoute(const std::string& peerArg, std::string* error)
+    {
+        const auto fail = [&](const std::string& why) -> std::optional<PeeringService::OperatorRoute> {
+            if (error) *error = why;
+            return std::nullopt;
+        };
+        std::string peer;
+        Enrollment e;
+        std::string consumer;
+        {
+            std::lock_guard<std::mutex> lock(m);
+            const auto resolved = resolvePeerLocked(peerArg);
+            if (!resolved) return fail("NO_SUCH_PEER");
+            peer = *resolved;
+            const auto found = enrollments.find(peer);
+            if (!found || found->status != "active") return fail("NOT_PAIRED");
+            if (found->grantedRole != "operator")
+                return fail("NOT_AN_OPERATOR: " + found->alias + " paired this runtime as a peer");
+            e = *found;
+            consumer = config.shell.empty() ? "operator" : config.shell;
+        }
+        const auto s = self();
+        if (!s) return fail("IDENTITY_UNAVAILABLE");
+        const PKey key = generateP256();
+        const Bytes spki = spkiDer(key.get());
+        std::string why;
+        const auto leaf = options.identity->issue(Role::Client, spki,
+            std::chrono::duration_cast<std::chrono::seconds>(kRouteLifetime), &why);
+        if (!leaf) return fail("IDENTITY_UNAVAILABLE: " + why);
+        const json reply = callPeer(peer, "establishRoute",
+            json::array({{{"consumer", consumer}, {"target", "core_service"}, {"client_pin", spkiPin(spki)}}}));
+        if (isFault(reply)) return fail(reply["error"].get<std::string>());
+        if (!reply.is_object() || !reply.contains("ticket")) return fail("MALFORMED_REPLY");
+        PeeringService::OperatorRoute route;
+        route.dial = {{"addresses", e.addresses}, {"port", reply.value("port", 0)},
+                      {"server_pin", reply.value("server_pin", "")}, {"anchors", e.trustAnchorPem}};
+        route.hello = {{"ticket", reply["ticket"]}, {"module", "core_service"}};
+        route.chainPem = *leaf + s->rootPem;
+        route.keyPem = privateKeyPem(key.get());
+        route.lifetimeMs = reply.value("lifetime_ms", std::int64_t{0});
+        return route;
     }
 
     // What an enrolled peer exports to this runtime, asked over the control link.
@@ -2005,5 +2050,11 @@ json PeeringService::invoke(const CallerRef& caller, const std::string& method, 
 }
 
 std::uint16_t PeeringService::controlPort() const { return impl_->boundControlPort(); }
+
+std::optional<PeeringService::OperatorRoute> PeeringService::operatorRoute(const std::string& peer,
+                                                                           std::string* error)
+{
+    return impl_->operatorRoute(peer, error);
+}
 
 } // namespace logos::peering

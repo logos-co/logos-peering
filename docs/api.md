@@ -23,12 +23,12 @@ Callable only by `peering_module`.
 
 | Caller | May call |
 |---|---|
-| `{kind:host}` (the engine) | engine methods |
+| `{kind:host}` (the engine) | engine methods; with `operator` on, the host methods for `core_service`, which it hosts |
 | `{kind:module,name:<shell>}` (the shell named in `configure`) | management, read and write |
 | `{kind:operator,name:N}`, a local operator (`auto` included) | management, read and write |
 | `{kind:operator,name:@peer:*}`, a remote operator | management, read only |
 | `{kind:module,name:X}`, X a loaded export (`exportLoaded`) | host methods |
-| `{kind:module,name:core_service}` with `operator` on | host methods |
+| `{kind:module,name:core_service}` with `operator` on | host methods (the engine calls them as the host) |
 | `{kind:module,name:F}`, F a loaded facade (`facadeLoaded`) | facade methods, and `issueCertificate("client")` |
 
 ### Engine methods
@@ -114,6 +114,21 @@ and its root, and says what it came for in its Hello:
 | `establishRoute({consumer, target, client_pin})` → a ticket and dial info | enrolled peer |
 | `renewRoute(route)` → `{lifetime_ms}` | enrolled peer |
 | `peerUpdate(update)` | enrolled peer (not yet) |
+
+## Operators (Remote Runtime Control)
+
+With `operator` on, the runtime also serves `core_service` on `tls_tcp`: it gets a
+`provider` leaf, authenticates each session with `redeemTicket` and notes the listener,
+all as the host. Only a runtime this one paired as an operator gets a route to it
+(`establishRoute` with `target: "core_service"`), and every session on it is the caller
+`{kind:"operator", name:"@peer:<uuid>"}`, with core_service's operator scopes and no
+token. `createInvite("operator", …)` mints the invite; its redemption waits for
+`confirmPairing` here, showing the redeemer's display ID.
+
+A tool with no runtime of its own pairs and routes with libpeering in-process:
+`LocalIdentity` keeps its root in a directory, `PeeringService` (configured with no
+control endpoint) redeems the invite, and `PeeringService::operatorRoute(peer)` returns
+the dial answer, the Hello and a client credential made for that route alone.
 
 ## Configuration (the `peering_config` spawn key)
 

@@ -1,0 +1,10 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(OpenSSL 3.0)
+find_dependency(nlohmann_json 3.10)
+find_dependency(PkgConfig)
+pkg_check_modules(BLAKE3 REQUIRED IMPORTED_TARGET libblake3)
+find_dependency(logos-protocol CONFIG)
+
+include("${CMAKE_CURRENT_LIST_DIR}/logos_peering_targets.cmake")

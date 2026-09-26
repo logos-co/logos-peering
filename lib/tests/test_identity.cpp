@@ -1,5 +1,7 @@
+#include "logos/peering/certs.h"
 #include "logos/peering/fs.h"
 #include "logos/peering/identity.h"
+#include "logos/peering/local_identity.h"
 
 #include <gtest/gtest.h>
 
@@ -67,4 +69,23 @@ TEST(Identity, AnIncompleteOrMismatchedIdentityIsRefused)
     EXPECT_NE(error.find("incomplete"), std::string::npos);
     fs::remove_all(dir);
     fs::remove_all(otherDir);
+}
+
+TEST(Identity, ALocalIdentityIssuesLeavesUnderItsRoot)
+{
+    const fs::path dir = freshDir("local");
+    LocalIdentity local(dir);
+    std::string error;
+    const auto info = local.info(&error);
+    ASSERT_TRUE(info.has_value()) << error;
+    EXPECT_TRUE(isUuid(info->runtimeId));
+    const PKey key = generateP256();
+    const auto leafPem = local.issue(Role::Client, spkiDer(key.get()), std::chrono::hours(1), &error);
+    ASSERT_TRUE(leafPem.has_value()) << error;
+    const Cert leaf = certFromPem(*leafPem);
+    const Cert root = certFromPem(info->rootCertPem);
+    EXPECT_EQ(verifyLeaf(leaf.get(), root.get(), Role::Client), "");
+    // The same identity the next time.
+    EXPECT_EQ(LocalIdentity(dir).info(&error)->runtimeId, info->runtimeId);
+    fs::remove_all(dir);
 }
