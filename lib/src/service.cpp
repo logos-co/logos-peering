@@ -47,6 +47,8 @@ constexpr auto kRouteLifetime = std::chrono::seconds(3600);
 constexpr auto kTicketTtl = std::chrono::seconds(30);
 constexpr auto kPairingLifetime = std::chrono::minutes(5);
 constexpr auto kFinishedKept = std::chrono::seconds(60);
+// How often a control endpoint that could not listen (its port still held) tries again.
+constexpr auto kControlRetry = std::chrono::seconds(1);
 constexpr std::int64_t kControlSessionMs = 3600 * 1000;
 constexpr int kLinkTimeoutMs = 15000;
 constexpr std::int64_t kMaxFrame = 16 * 1024 * 1024;
@@ -506,6 +508,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
 
     json ensureControl()
     {
+        std::lock_guard<std::mutex> serial(controlMutex);
         PeeringConfig cfg;
         lp_provider* stale = nullptr;
         {
@@ -548,17 +551,25 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
             if (!provider && remembered) provider = listen(cfg.controlHost, 0, chain, key);
             if (!provider) {
                 const std::string why = "cannot listen on " + cfg.controlHost + ":" + std::to_string(cfg.controlPort);
-                std::lock_guard<std::mutex> lock(m);
-                controlError = why;
+                bool first = false;
+                {
+                    std::lock_guard<std::mutex> lock(m);
+                    first = controlError.empty();
+                    controlError = why;
+                }
+                if (first) audit.record("control_unavailable", {{"reason", why}});
                 return fault("CONTROL_UNAVAILABLE: " + why);
             }
+            bool recovered = false;
             {
                 std::lock_guard<std::mutex> lock(m);
                 control = provider;
                 controlHost = cfg.controlHost;
                 controlPortWanted = cfg.controlPort;
+                recovered = !controlError.empty();
                 controlError.clear();
             }
+            if (recovered) audit.record("control_listening", {{"port", cfg.controlPort}});
             if (cfg.controlPort == 0) {
                 const std::uint16_t bound = boundControlPort();
                 if (remembered && bound != remembered)
@@ -1182,13 +1193,16 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         }
         const auto s = self(&error);
         if (!s) return fault("IDENTITY_UNAVAILABLE: " + error);
+        // An endpoint that cannot listen yet (a restart racing the old process for
+        // its port) is retried by the worker; everything else applies now.
         const json control = ensureControl();
-        if (isFault(control)) return control;
         refreshLocalInvite();
         emit("importsChanged");
         emit("exportsChanged");
         emit("remotePolicyChanged");
-        return json{{"ok", true}, {"runtime_id", s->runtimeId}, {"control_port", boundControlPort()}};
+        json reply = {{"ok", true}, {"runtime_id", s->runtimeId}, {"control_port", boundControlPort()}};
+        if (isFault(control)) reply["control_error"] = control["error"];
+        return reply;
     }
 
     json lifecycle(const std::string& method, const std::optional<std::string>& name,
@@ -2045,8 +2059,11 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
             const bool admit = windowOpenLocked() || invites.anyLive();
             const bool refresh = admit != admitted;
             admitted = admit;
+            const bool retryControl = config.control && !control && now >= nextControlAttempt;
+            if (retryControl) nextControlAttempt = now + kControlRetry;
             lock.unlock();
             for (Outgoing* o : due) poll(*o);
+            if (retryControl) ensureControl();
             refreshLocalInvite();
             if (refresh) refreshControl();
             lock.lock();
@@ -2122,6 +2139,8 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
     std::string controlHost;
     std::uint16_t controlPortWanted = 0;
     std::string controlError; // why the configured endpoint is not listening
+    SteadyClock::time_point nextControlAttempt{};
+    std::mutex controlMutex; // one ensureControl at a time: configure and the worker's retry
     SteadyClock::time_point windowUntil{};
     std::string localInviteDigest;
 

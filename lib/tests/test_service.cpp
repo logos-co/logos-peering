@@ -1086,16 +1086,22 @@ TEST(PeeringService, AnEphemeralControlPortIsKeptAcrossARestart)
     EXPECT_TRUE(a.manage("peerExports", json::array({b.id()})).contains("exports"));
 }
 
-TEST(PeeringService, StatusSaysWhyTheControlEndpointIsNotListening)
+TEST(PeeringService, AControlEndpointThatCannotListenSaysWhyAndListensOnceItCan)
 {
     Runtime a("laptop");
     Runtime b("office");
     a.configure();
-    const json taken = {{"name", "office"},
-                        {"shell", "shell"},
-                        {"control", {{"enabled", true}, {"host", "127.0.0.1"}, {"port", a.port()}}}};
-    const json refused = b.engine("configure", json::array({taken}));
-    EXPECT_NE(refused.value("error", "").find("CONTROL_UNAVAILABLE"), std::string::npos) << refused.dump();
+    const std::uint16_t taken = a.port();
+    // B restarting while its old process still holds the port.
+    const json config = {{"name", "office"},
+                         {"shell", "shell"},
+                         {"control", {{"enabled", true}, {"host", "127.0.0.1"}, {"port", taken}}},
+                         {"exports", {{"enabled", true}}}};
+    const json configured = b.engine("configure", json::array({config}));
+    EXPECT_TRUE(configured.value("ok", false)) << configured.dump();
+    EXPECT_NE(configured.value("control_error", "").find("CONTROL_UNAVAILABLE"), std::string::npos)
+        << configured.dump();
+    EXPECT_TRUE(b.sawEvent("exportsChanged")) << "the rest of the configuration still applies";
     const json down = b.manage("status")["control"];
     EXPECT_TRUE(down.value("enabled", false));
     EXPECT_EQ(down.value("port", -1), 0);
@@ -1104,10 +1110,10 @@ TEST(PeeringService, StatusSaysWhyTheControlEndpointIsNotListening)
     EXPECT_NE(invite.value("error", "").find("CONTROL_UNAVAILABLE: cannot listen"), std::string::npos)
         << invite.dump();
 
-    b.configure();
-    const json up = b.manage("status")["control"];
-    EXPECT_NE(up.value("port", 0), 0);
-    EXPECT_FALSE(up.contains("error")) << up.dump();
+    a.service.reset();
+    ASSERT_TRUE(waitFor([&] { return b.port() == taken; })) << b.manage("status").dump();
+    EXPECT_FALSE(b.manage("status")["control"].contains("error"));
+    EXPECT_TRUE(b.manage("createInvite", json::array({"peer", 60})).contains("invite"));
 }
 
 TEST(PeeringService, ARenewalAsksAgainWhetherTheImportAdmitsTheConsumer)

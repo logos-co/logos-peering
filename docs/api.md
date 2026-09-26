@@ -161,6 +161,10 @@ the dial answer, the Hello and a client credential made for that route alone.
 Unknown keys are errors. Entries given here are locked; the same kinds of entries made at
 run time (`setExport`, `setImport`, `setPolicy`) persist in `peering_module`'s state.
 
+A control endpoint that cannot listen (its port still held, say by the runtime's previous
+process) does not fail the rest: `configure` answers `ok` with `control_error`,
+`peering_module` tries again every second, and `status().control.error` says why meanwhile.
+
 `control.local_invite` (`true`, or `{path, role, allow}`) keeps a single-use invite for a
 same-user app on this machine in a 0600 file (default `<state>/local-invite`; the
 `logoscore` daemon passes `<config dir>/peering/local-invite`), naming
