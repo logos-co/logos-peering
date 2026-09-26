@@ -16,15 +16,20 @@ pkg_check_modules(BLAKE3 REQUIRED IMPORTED_TARGET libblake3)
 
 add_library(logos_peering STATIC
     lib/src/audit.cpp
+    lib/src/callers.cpp
     lib/src/certs.cpp
+    lib/src/control_message.cpp
     lib/src/crypto.cpp
     lib/src/discovery_key.cpp
     lib/src/enrollment.cpp
     lib/src/fs.cpp
     lib/src/identity.cpp
+    lib/src/invite_store.cpp
     lib/src/invites.cpp
     lib/src/names.cpp
     lib/src/pairing.cpp
+    lib/src/pairing_session.cpp
+    lib/src/routes.cpp
     lib/src/tickets.cpp
 )
 add_library(logos::peering ALIAS logos_peering)
@@ -42,14 +47,19 @@ if(LOGOS_PEERING_BUILD_TESTS)
     find_package(GTest REQUIRED)
     add_executable(logos_peering_tests
         lib/tests/test_audit.cpp
+        lib/tests/test_callers.cpp
+        lib/tests/test_control_message.cpp
         lib/tests/test_certs.cpp
         lib/tests/test_crypto.cpp
         lib/tests/test_discovery_key.cpp
         lib/tests/test_enrollment.cpp
         lib/tests/test_identity.cpp
+        lib/tests/test_invite_store.cpp
         lib/tests/test_invites.cpp
         lib/tests/test_names.cpp
         lib/tests/test_pairing.cpp
+        lib/tests/test_pairing_session.cpp
+        lib/tests/test_routes.cpp
         lib/tests/test_tickets.cpp
     )
     target_link_libraries(logos_peering_tests PRIVATE logos_peering GTest::gtest_main)
