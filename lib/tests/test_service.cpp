@@ -1086,6 +1086,30 @@ TEST(PeeringService, AnEphemeralControlPortIsKeptAcrossARestart)
     EXPECT_TRUE(a.manage("peerExports", json::array({b.id()})).contains("exports"));
 }
 
+TEST(PeeringService, StatusSaysWhyTheControlEndpointIsNotListening)
+{
+    Runtime a("laptop");
+    Runtime b("office");
+    a.configure();
+    const json taken = {{"name", "office"},
+                        {"shell", "shell"},
+                        {"control", {{"enabled", true}, {"host", "127.0.0.1"}, {"port", a.port()}}}};
+    const json refused = b.engine("configure", json::array({taken}));
+    EXPECT_NE(refused.value("error", "").find("CONTROL_UNAVAILABLE"), std::string::npos) << refused.dump();
+    const json down = b.manage("status")["control"];
+    EXPECT_TRUE(down.value("enabled", false));
+    EXPECT_EQ(down.value("port", -1), 0);
+    EXPECT_NE(down.value("error", "").find("cannot listen on 127.0.0.1:"), std::string::npos) << down.dump();
+    const json invite = b.manage("createInvite", json::array({"peer", 60}));
+    EXPECT_NE(invite.value("error", "").find("CONTROL_UNAVAILABLE: cannot listen"), std::string::npos)
+        << invite.dump();
+
+    b.configure();
+    const json up = b.manage("status")["control"];
+    EXPECT_NE(up.value("port", 0), 0);
+    EXPECT_FALSE(up.contains("error")) << up.dump();
+}
+
 TEST(PeeringService, ARenewalAsksAgainWhetherTheImportAdmitsTheConsumer)
 {
     Runtime a("laptop");

@@ -520,7 +520,11 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
             }
         }
         if (stale) lp_provider_destroy(stale);
-        if (!cfg.control) return json{{"ok", true}};
+        if (!cfg.control) {
+            std::lock_guard<std::mutex> lock(m);
+            controlError.clear();
+            return json{{"ok", true}};
+        }
         std::string error;
         if (!ensureControlCredential(error)) return fault("IDENTITY_UNAVAILABLE: " + error);
         std::string chain;
@@ -542,14 +546,18 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
             lp_provider* provider = listen(cfg.controlHost, remembered ? remembered : cfg.controlPort,
                                            chain, key);
             if (!provider && remembered) provider = listen(cfg.controlHost, 0, chain, key);
-            if (!provider)
-                return fault("CONTROL_UNAVAILABLE: cannot listen on " + cfg.controlHost + ":"
-                             + std::to_string(cfg.controlPort));
+            if (!provider) {
+                const std::string why = "cannot listen on " + cfg.controlHost + ":" + std::to_string(cfg.controlPort);
+                std::lock_guard<std::mutex> lock(m);
+                controlError = why;
+                return fault("CONTROL_UNAVAILABLE: " + why);
+            }
             {
                 std::lock_guard<std::mutex> lock(m);
                 control = provider;
                 controlHost = cfg.controlHost;
                 controlPortWanted = cfg.controlPort;
+                controlError.clear();
             }
             if (cfg.controlPort == 0) {
                 const std::uint16_t bound = boundControlPort();
@@ -1595,11 +1603,13 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         const auto s = self();
         const std::uint16_t port = boundControlPort();
         std::lock_guard<std::mutex> lock(m);
+        json control = {{"enabled", config.control}, {"port", port}};
+        if (!controlError.empty()) control["error"] = controlError;
         return json{{"runtime_id", s ? s->runtimeId : ""},
                     {"display_id", s ? s->displayId : ""},
                     {"name", config.name},
                     {"configured", configured},
-                    {"control", {{"enabled", config.control}, {"port", port}}},
+                    {"control", control},
                     {"exports", config.exports},
                     {"operator", config.operatorRoutes},
                     {"peers", enrollments.all().size()},
@@ -1698,7 +1708,8 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         std::string host;
         {
             std::lock_guard<std::mutex> lock(m);
-            if (!config.control || !port) return fault("CONTROL_DISABLED");
+            if (!config.control) return fault("CONTROL_DISABLED");
+            if (!port) return fault("CONTROL_UNAVAILABLE: " + (controlError.empty() ? "not listening" : controlError));
             if (*role == "operator" && !config.operatorRoutes) return fault("OPERATOR_DISABLED");
             host = !config.advertise.empty() ? config.advertise
                  : config.controlHost != "0.0.0.0" && config.controlHost != "::" ? config.controlHost
@@ -2110,6 +2121,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
     lp_provider* control = nullptr;
     std::string controlHost;
     std::uint16_t controlPortWanted = 0;
+    std::string controlError; // why the configured endpoint is not listening
     SteadyClock::time_point windowUntil{};
     std::string localInviteDigest;
 

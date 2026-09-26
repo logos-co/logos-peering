@@ -81,7 +81,7 @@ Events hosts follow: `anchorsChanged()`, `routesRevoked(peer, generation)`,
 
 | Method | Write? |
 |---|---|
-| `status()` | no — `{runtime_id, display_id, name, control:{enabled, port}, exports, operator, peers, pairing_window_ms, invites}` |
+| `status()` | no — `{runtime_id, display_id, name, control:{enabled, port, error?}, exports, operator, peers, pairing_window_ms, invites}`; `error` says why an enabled endpoint is not listening |
 | `peers()` | no — `{peers: [{runtime_id, alias, display_name, display_id, role, granted_role, status, addresses, control_port}]}` |
 | `nearby()` | no — `{nearby: []}` (discovery comes later) |
 | `pending()` | no — `{pending: [...]}`, pairings in progress with their codes |
