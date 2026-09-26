@@ -427,10 +427,13 @@ TEST(PeeringService, CallersAreGated)
     EXPECT_EQ(b.call(CallerRef::module("stranger"), "status").value("error", ""), "NOT_AUTHORISED");
     EXPECT_EQ(b.call(CallerRef::module("stranger"), "setExport", export1).value("error", ""),
               "NOT_AUTHORISED");
-    // auto and remote operators read, never write.
-    EXPECT_FALSE(b.call(CallerRef::named("auto"), "status").contains("error"));
-    EXPECT_EQ(b.call(CallerRef::named("auto"), "setExport", export1).value("error", ""), "NOT_AUTHORISED");
+    // Local operators manage, the default `auto` included; remote ones only read.
+    EXPECT_TRUE(b.call(CallerRef::named("auto"), "setExport", export1).value("ok", false));
+    EXPECT_TRUE(b.call(CallerRef::named("auto"), "removeExport", json::array({"echo_module"}))
+                    .value("ok", false));
     EXPECT_FALSE(b.call(CallerRef::named("@peer:x"), "peers").contains("error"));
+    EXPECT_EQ(b.call(CallerRef::named("@peer:x"), "setExport", export1).value("error", ""),
+              "NOT_AUTHORISED");
     EXPECT_EQ(b.call(CallerRef::named("@peer:x"), "createInvite", json::array({"peer", 60}))
                   .value("error", ""), "NOT_AUTHORISED");
     // Named operators and the shell manage.

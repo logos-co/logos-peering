@@ -25,8 +25,8 @@ Callable only by `peering_module`.
 |---|---|
 | `{kind:host}` (the engine) | engine methods |
 | `{kind:module,name:<shell>}` (the shell named in `configure`) | management, read and write |
-| `{kind:operator,name:N}`, N neither `auto` nor `@peer:*` | management, read and write |
-| `{kind:operator,name:auto}`, `{kind:operator,name:@peer:*}` | management, read only |
+| `{kind:operator,name:N}`, a local operator (`auto` included) | management, read and write |
+| `{kind:operator,name:@peer:*}`, a remote operator | management, read only |
 | `{kind:module,name:X}`, X a loaded export (`exportLoaded`) | host methods |
 | `{kind:module,name:core_service}` with `operator` on | host methods |
 | `{kind:module,name:F}`, F a loaded facade (`facadeLoaded`) | facade methods, and `issueCertificate("client")` |

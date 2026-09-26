@@ -941,8 +941,9 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
     bool isManagerLocked(const CallerRef& c) const
     {
         if (c.kind == CallerRef::Kind::Module) return !config.shell.empty() && c.name == config.shell;
+        // Local operators, the default `auto` token included; a remote one only reads.
         if (c.kind == CallerRef::Kind::Operator)
-            return !c.name.empty() && c.name != "auto" && c.name.rfind("@peer:", 0) != 0;
+            return !c.name.empty() && c.name.rfind("@peer:", 0) != 0;
         return false;
     }
 
