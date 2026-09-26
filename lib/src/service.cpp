@@ -123,6 +123,13 @@ std::string addressOf(const std::string& remote)
     return colon == std::string::npos ? remote : remote.substr(0, colon);
 }
 
+bool isLoopback(const std::string& address)
+{
+    return address.rfind("127.", 0) == 0 || address == "::1" || address.rfind("::ffff:127.", 0) == 0;
+}
+
+constexpr const char* kLocalIssuer = "@local";
+
 // The first address of an interface that is up and not loopback.
 std::string guessAddress()
 {
@@ -419,6 +426,65 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
 
     bool windowOpenLocked() const { return SteadyClock::now() < windowUntil; }
 
+    // A live invite lets unknown roots pair; the local one only over loopback.
+    bool invitesAdmit(bool loopback)
+    {
+        for (const auto& invite : invites.live())
+            if (loopback || invite.issuedBy != kLocalIssuer) return true;
+        return false;
+    }
+
+    // Keeps a live local invite in its file while configured, and replaces it
+    // once used or expired.
+    void refreshLocalInvite()
+    {
+        PeeringConfig cfg;
+        std::string digest;
+        {
+            std::lock_guard<std::mutex> lock(m);
+            cfg = config;
+            digest = localInviteDigest;
+        }
+        const std::filesystem::path path = cfg.localInvitePath.empty()
+            ? options.stateDir / "local-invite" : std::filesystem::u8path(cfg.localInvitePath);
+        std::error_code ignored;
+        if (!cfg.control || !cfg.localInvite) {
+            if (digest.empty()) return;
+            invites.revoke(digest);
+            std::filesystem::remove(path, ignored);
+            std::lock_guard<std::mutex> lock(m);
+            localInviteDigest.clear();
+            return;
+        }
+        bool live = false;
+        for (const auto& invite : invites.live())
+            if (!digest.empty() && invite.secretDigest == digest) live = true;
+        if (live && std::filesystem::exists(path, ignored)) return;
+        const std::uint16_t port = boundControlPort();
+        const auto s = self();
+        if (!port || !s) return;
+        if (!digest.empty()) invites.revoke(digest);
+        const std::string role =
+            cfg.localInviteRole == "operator" && cfg.operatorRoutes ? "operator" : "peer";
+        const std::string secret = invites.issue(role, std::chrono::seconds(0), kLocalIssuer);
+        Invite invite;
+        invite.runtimeId = s->runtimeId;
+        invite.rootDigest = base64url(sha256(s->rootSpki));
+        invite.secret = secret;
+        invite.host = "127.0.0.1";
+        invite.port = port;
+        std::filesystem::create_directories(path.parent_path(), ignored);
+        if (!writeFileAtomically(path, formatInvite(invite) + "\n")) {
+            invites.revoke(inviteSecretDigest(secret));
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(m);
+            localInviteDigest = inviteSecretDigest(secret);
+        }
+        refreshControl();
+    }
+
     // ── the control endpoint ────────────────────────────────────────────────
 
     void refreshControl()
@@ -566,7 +632,9 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
                         {"session", {{"peer", e->runtimeInstanceId},
                                      {"generation", routes.generation(e->runtimeInstanceId)}}}};
         }
-        if (anchored || purpose != "pairing" || !(windowOpenLocked() || invites.anyLive())
+        const std::string address = addressOf(request->value("remote", ""));
+        const bool loopback = isLoopback(address);
+        if (anchored || purpose != "pairing" || !(windowOpenLocked() || invitesAdmit(loopback))
             || enrollments.findByAnchorPin(rootPin) || constantTimeEqual(chain->rootSpki, s->rootSpki))
             return fault("NOT_AUTHORISED");
         purgeIncomingLocked();
@@ -574,10 +642,14 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         const std::string sid = base64url(randomBytes(12));
         Incoming in;
         in.responder = std::make_unique<PairingResponder>(partyLocked(*s),
-            [this](const std::string& secret) -> std::optional<std::string> {
-                const auto invite = invites.redeem(secret);
+            [this, loopback](const std::string& secret) -> std::optional<std::string> {
+                // The local invite is for this machine only.
+                const auto invite = invites.redeem(secret, [loopback](const IssuedInvite& i) {
+                    return loopback || i.issuedBy != kLocalIssuer;
+                });
                 if (!invite) return std::nullopt;
-                audit.record("invite_redeemed", {{"role", invite->role}});
+                audit.record("invite_redeemed", {{"role", invite->role}, {"issued_by", invite->issuedBy}});
+                wake.notify_all();
                 return invite->role;
             },
             windowOpenLocked());
@@ -585,7 +657,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         in.rootPem = certPem(chain->root.get());
         in.leafPin = leafPin;
         in.displayId = displayIdFor(chain->rootSpki);
-        in.address = addressOf(request->value("remote", ""));
+        in.address = address;
         in.expires = SteadyClock::now() + kPairingLifetime;
         incoming[sid] = std::move(in);
         return json{{"caller", remotePrincipal("pairing:" + sid, "pairing")},
@@ -1012,6 +1084,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         if (!s) return fault("IDENTITY_UNAVAILABLE: " + error);
         const json control = ensureControl();
         if (isFault(control)) return control;
+        refreshLocalInvite();
         emit("importsChanged");
         emit("remotePolicyChanged");
         return json{{"ok", true}, {"runtime_id", s->runtimeId}, {"control_port", boundControlPort()}};
@@ -1772,6 +1845,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
             admitted = admit;
             lock.unlock();
             for (Outgoing* o : due) poll(*o);
+            refreshLocalInvite();
             if (refresh) refreshControl();
             lock.lock();
         }
@@ -1846,6 +1920,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
     std::string controlHost;
     std::uint16_t controlPortWanted = 0;
     SteadyClock::time_point windowUntil{};
+    std::string localInviteDigest;
 
     EnrollmentStore enrollments;
     InviteStore invites;

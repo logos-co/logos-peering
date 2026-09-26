@@ -33,6 +33,11 @@ struct PeeringConfig {
     std::string controlHost = "0.0.0.0";
     std::uint16_t controlPort = 7443;
     std::string advertise; // the address invites carry; empty: the control host
+    // A single-use invite kept in a 0600 file for a same-user app on this
+    // machine, redeemable over loopback only and replaced once used.
+    bool localInvite = false;
+    std::string localInvitePath; // empty: <state>/local-invite
+    std::string localInviteRole = "peer";
     bool exports = false;
     std::uint16_t exportPortMin = 0;
     std::uint16_t exportPortMax = 0;

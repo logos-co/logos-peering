@@ -38,8 +38,12 @@ public:
     // Returns the secret; it is not stored. `ttl` is capped by the role's maximum.
     std::string issue(const std::string& role, std::chrono::seconds ttl, const std::string& issuedBy);
 
-    // Consumes a live invite whose secret matches, returning what it granted.
-    std::optional<IssuedInvite> redeem(const std::string& secret);
+    // Consumes a live invite whose secret matches and that `accept` (if
+    // given) approves, returning what it granted.
+    std::optional<IssuedInvite> redeem(const std::string& secret,
+                                       const std::function<bool(const IssuedInvite&)>& accept = {});
+    // Withdraws the invite with this secret digest.
+    bool revoke(const std::string& secretDigest);
 
     // Whether a live invite exists at all (the listener then admits unknown roots).
     bool anyLive();

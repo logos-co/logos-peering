@@ -61,7 +61,7 @@ Events hosts follow: `anchorsChanged()`, `routesRevoked(peer, generation)`,
 
 | Method | Notes |
 |---|---|
-| `requestRoute(consumer, timeoutMs)` | Dial info for the facade's import: `{addresses, port, server_pin, anchors, ticket, route, lifetime_ms, max_frame}`. `consumer` must be `runtime` or one of the import's `allowed_callers`. |
+| `requestRoute(consumer, timeoutMs)` | Dial info for the facade's import: `{addresses, port, server_pin, anchors, ticket, route, lifetime_ms, max_frame}`. `consumer` must be `runtime` or one of the import's `allowed_callers`. The facade's own `runtime` session fetches the interface and carries the events; unless the peer's policy lets `runtime` call, it gets a look-only route (session metadata `"calls": false`). |
 | `renewRoute(route)` | `{lifetime_ms}` |
 | `importDescriptor()` | `{name, from, module, events, allowed_callers, peer_alias, peer_display_name}` |
 | `reportImportState(state, reason)` | `connecting`, `ready` or `error`; emits `importStateChanged`. |
@@ -117,7 +117,9 @@ and its root, and says what it came for in its Hello:
 {
   "name": "office-server",
   "shell": "logoscore",
-  "control":  {"enabled": true, "host": "0.0.0.0", "port": 7443, "advertise": "192.168.1.5"},
+  "control":  {"enabled": true, "host": "0.0.0.0", "port": 7443, "advertise": "192.168.1.5",
+               "local_invite": {"path": "/home/me/.config/logoscore/peering/local-invite",
+                                "role": "operator"}},
   "exports":  {"enabled": true, "ports": "7450-7499",
                "modules": {"monerod_module": {"events": true}}},
   "operator": false,
@@ -131,3 +133,17 @@ and its root, and says what it came for in its Hello:
 
 Unknown keys are errors. Entries given here are locked; the same kinds of entries made at
 run time (`setExport`, `setImport`, `setPolicy`) persist in `peering_module`'s state.
+
+`control.local_invite` (`true`, or `{path, role}`) keeps a single-use invite for a
+same-user app on this machine in a 0600 file (default `<state>/local-invite`), naming
+`127.0.0.1`. It is redeemable over loopback only, and a new one replaces it once used or
+expired (the operator role, which needs `operator`, lasts 15 minutes at a time).
+
+## Facades
+
+`logos_host_remote --name <import>` hosts one facade, the local stand-in for an import. It
+takes its credential on stdin like `logos_host_plain`, calls `peering_module` as the import
+(`importDescriptor`, `issueCertificate("client")`, `requestRoute`, `renewRoute`,
+`reportImportState`), serves the import's name to local consumers, and forwards each call
+upstream on a session per consumer. A failed upstream call returns
+`{"code":"dispatch_failed","message":"remote/<code>: …","origin":<import>}`.

@@ -65,7 +65,8 @@ std::string InviteStore::issue(const std::string& role, std::chrono::seconds ttl
     return secret;
 }
 
-std::optional<IssuedInvite> InviteStore::redeem(const std::string& secret)
+std::optional<IssuedInvite> InviteStore::redeem(const std::string& secret,
+                                                const std::function<bool(const IssuedInvite&)>& accept)
 {
     const std::string digest = inviteSecretDigest(secret);
     if (digest.empty()) return std::nullopt;
@@ -75,12 +76,25 @@ std::optional<IssuedInvite> InviteStore::redeem(const std::string& secret)
     for (auto it = invites_.begin(); it != invites_.end(); ++it) {
         const auto stored = fromBase64url(it->secretDigest);
         if (!raw || !stored || !constantTimeEqual(*raw, *stored)) continue;
+        if (accept && !accept(*it)) return std::nullopt;
         IssuedInvite found = *it;
         invites_.erase(it);
         saveLocked();
         return found;
     }
     return std::nullopt;
+}
+
+bool InviteStore::revoke(const std::string& secretDigest)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto before = invites_.size();
+    invites_.erase(std::remove_if(invites_.begin(), invites_.end(),
+                                  [&](const IssuedInvite& i) { return i.secretDigest == secretDigest; }),
+                   invites_.end());
+    if (invites_.size() == before) return false;
+    saveLocked();
+    return true;
 }
 
 bool InviteStore::anyLive()

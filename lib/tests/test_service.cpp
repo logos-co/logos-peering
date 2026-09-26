@@ -18,7 +18,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <sstream>
 #include <mutex>
 #include <thread>
 
@@ -683,4 +685,73 @@ TEST(Facade, CarriesTheEventsAnExportShares)
     lp_unsubscribe(subscription);
     lp_client_destroy(client);
     facade.stop();
+}
+
+namespace {
+
+std::string readText(const fs::path& path)
+{
+    std::ifstream in(path);
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
+}
+
+json localInviteConfig(const fs::path& path, const std::string& host = "127.0.0.1")
+{
+    return {{"control", {{"enabled", true}, {"host", host}, {"port", 0},
+                         {"local_invite", {{"path", path.string()}}}}},
+            {"exports", {{"enabled", true}}}};
+}
+
+} // namespace
+
+TEST(PeeringService, ALocalInvitePairsOverLoopbackAndIsReplaced)
+{
+    Runtime a("basecamp");
+    Runtime b("daemon");
+    a.configure();
+    const fs::path path = b.dir / "link" / "local-invite";
+    b.configure(localInviteConfig(path));
+    ASSERT_TRUE(waitFor([&] { return fs::exists(path); }));
+    const auto perms = fs::status(path).permissions();
+    EXPECT_EQ(perms & (fs::perms::group_all | fs::perms::others_all), fs::perms::none);
+    const std::string first = readText(path);
+    ASSERT_EQ(first.rfind("logos-pair:v1:", 0), 0u) << first;
+
+    const json started = a.manage("redeemInvite", json::array({first.substr(0, first.find('\n'))}));
+    ASSERT_FALSE(started.contains("error")) << started.dump();
+    ASSERT_TRUE(waitFor([&] { return a.manage("peers")["peers"].size() == 1 && b.manage("peers")["peers"].size() == 1; }));
+    // Used once, then replaced.
+    ASSERT_TRUE(waitFor([&] { return readText(path) != first && !readText(path).empty(); }));
+}
+
+TEST(PeeringService, ALocalInviteIsNotRedeemedFromAnotherAddress)
+{
+#ifdef __APPLE__
+    // Local Network privacy holds a dial to this host's own LAN address.
+    GTEST_SKIP() << "macOS gates LAN dials behind the Local Network permission";
+#endif
+    const std::string lan = [] {
+        // The same address guess invites use; none on a loopback-only host.
+        Runtime probe("probe");
+        probe.configure({{"control", {{"enabled", true}, {"host", "0.0.0.0"}, {"port", 0}}}});
+        const json invite = probe.manage("createInvite", json::array({"peer", 60}));
+        const auto parsed = invite.contains("invite")
+            ? parseInvite(invite["invite"].get<std::string>()) : std::nullopt;
+        return parsed ? parsed->host : std::string();
+    }();
+    if (lan.empty() || lan.rfind("127.", 0) == 0) GTEST_SKIP() << "no address but loopback here";
+    Runtime a("stranger");
+    Runtime b("daemon");
+    a.configure();
+    const fs::path path = b.dir / "local-invite";
+    b.configure(localInviteConfig(path, "0.0.0.0"));
+    ASSERT_TRUE(waitFor([&] { return fs::exists(path); }));
+    auto invite = parseInvite(readText(path).substr(0, readText(path).find('\n')));
+    ASSERT_TRUE(invite);
+    invite->host = lan;
+    const json started = a.manage("redeemInvite", json::array({formatInvite(*invite)}));
+    EXPECT_TRUE(started.contains("error")) << started.dump();
+    EXPECT_EQ(b.manage("peers")["peers"].size(), 0u);
 }

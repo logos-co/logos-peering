@@ -181,12 +181,27 @@ std::optional<PeeringConfig> parsePeeringConfig(const json& value, std::string* 
         return std::nullopt;
     }
     if (const auto it = value.find("control"); it != value.end()) {
-        if (!onlyKeys(*it, {"enabled", "host", "port", "advertise"}, "control", error)
+        if (!onlyKeys(*it, {"enabled", "host", "port", "advertise", "local_invite"}, "control", error)
             || !readBool(*it, "enabled", config.control, error)
             || !readString(*it, "host", config.controlHost, error)
             || !readPort(*it, "port", config.controlPort, error)
             || !readString(*it, "advertise", config.advertise, error))
             return std::nullopt;
+        if (const auto local = it->find("local_invite"); local != it->end()) {
+            if (local->is_boolean()) {
+                config.localInvite = local->get<bool>();
+            } else if (!onlyKeys(*local, {"path", "role"}, "control.local_invite", error)
+                       || !readString(*local, "path", config.localInvitePath, error)
+                       || !readString(*local, "role", config.localInviteRole, error)) {
+                return std::nullopt;
+            } else {
+                config.localInvite = true;
+            }
+            if (config.localInviteRole != "peer" && config.localInviteRole != "operator") {
+                fail(error, "control.local_invite.role is peer or operator");
+                return std::nullopt;
+            }
+        }
         if (!isHost(config.controlHost) || (!config.advertise.empty() && !isHost(config.advertise))) {
             fail(error, "control.host and control.advertise are addresses");
             return std::nullopt;

@@ -134,3 +134,22 @@ TEST(Config, PortRangesTakeThreeForms)
         EXPECT_FALSE(parsePeeringConfig(doc)) << bad;
     }
 }
+
+TEST(Config, ALocalInviteIsOnOrDescribed)
+{
+    json doc = example();
+    doc["control"]["local_invite"] = true;
+    auto config = parsePeeringConfig(doc);
+    ASSERT_TRUE(config);
+    EXPECT_TRUE(config->localInvite);
+    EXPECT_EQ(config->localInviteRole, "peer");
+    doc["control"]["local_invite"] = {{"path", "/tmp/x/local-invite"}, {"role", "operator"}};
+    config = parsePeeringConfig(doc);
+    ASSERT_TRUE(config);
+    EXPECT_EQ(config->localInvitePath, "/tmp/x/local-invite");
+    EXPECT_EQ(config->localInviteRole, "operator");
+    doc["control"]["local_invite"] = {{"role", "admin"}};
+    EXPECT_FALSE(parsePeeringConfig(doc));
+    doc["control"]["local_invite"] = {{"ttl", 5}};
+    EXPECT_FALSE(parsePeeringConfig(doc));
+}
