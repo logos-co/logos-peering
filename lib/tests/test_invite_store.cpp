@@ -40,6 +40,22 @@ TEST(InviteStore, SingleUseAndPersistedAsDigestsOnly)
     fs::remove(file);
 }
 
+TEST(InviteStore, AnAllowListSurvivesAReload)
+{
+    const fs::path file = fs::temp_directory_path() / ("invites-" + newUuidV4() + ".json");
+    std::string secret;
+    {
+        InviteStore store(file);
+        secret = store.issue("peer", 0s, "shell:logoscore", {"blockchain_module", "*"});
+    }
+    InviteStore reloaded(file);
+    ASSERT_TRUE(reloaded.load());
+    const auto redeemed = reloaded.redeem(secret);
+    ASSERT_TRUE(redeemed.has_value());
+    EXPECT_EQ(redeemed->allow, (std::vector<std::string>{"blockchain_module", "*"}));
+    fs::remove(file);
+}
+
 TEST(InviteStore, RuntimeControlInvitesLiveAtMostFifteenMinutes)
 {
     FakeClock clock;
