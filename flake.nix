@@ -25,7 +25,6 @@
       });
       # Plus "x86_64-windows", cross-built with MinGW on x86_64-linux.
       forAllTargets = logos-nix.lib.forAllTargets;
-      isWindows = pkgs: pkgs.stdenv.hostPlatform.isWindows;
 
       # What the Windows runner (logos-windows-ci `tests: true`) runs, one case per process.
       windowsTests = builtins.toFile "libpeering-tests.json" (builtins.toJSON {
@@ -36,26 +35,9 @@
         logos-protocol.packages.${pkgs.stdenv.hostPlatform.system}.logos-protocol-plain
       ];
 
-      libpeering = forAllTargets ({ pkgs, ... }: pkgs.stdenv.mkDerivation {
-        pname = "logos-libpeering";
-        version = "0.1.0";
-        src = lib.cleanSourceWith {
-          src = ./.;
-          filter = path: type: !(lib.hasPrefix (toString ./modules) (toString path));
-        };
-        nativeBuildInputs = [ pkgs.cmake pkgs.ninja pkgs.pkg-config ];
-        buildInputs = libDeps pkgs ++ [ pkgs.gtest ];
-        propagatedBuildInputs = libDeps pkgs;
-        cmakeFlags = [ "-DLOGOS_PEERING_BUILD_TESTS=ON" ]
-          # A PE cannot run on the build machine: nothing is discovered or run here.
-          ++ lib.optional (isWindows pkgs) "-DCMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE=PRE_TEST";
-        doCheck = !isWindows pkgs;
-        # A Windows box runs them instead, from the manifest.
-        postInstall = lib.optionalString (isWindows pkgs) ''
-          mkdir -p $out/bin $out/share/logos-tests
-          cp logos_peering_tests.exe $out/bin/
-          cp ${windowsTests} $out/share/logos-tests/libpeering.json
-        '';
+      libpeering = forAllTargets ({ pkgs, system }: import ./nix/libpeering.nix {
+        inherit pkgs windowsTests;
+        logosProtocol = logos-protocol.packages.${system}.logos-protocol-plain;
       });
 
       hostRemote = forAllTargets ({ pkgs, system }: pkgs.stdenv.mkDerivation {

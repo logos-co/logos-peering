@@ -3,7 +3,8 @@
 // A facade: the local stand-in for a module imported from another runtime.
 // It serves the import's name here and forwards each call upstream over
 // tls_tcp, on a session per local consumer whose route peering_module
-// grants. logos_host_remote runs one per process.
+// grants. logos_host_remote runs one per process; a single-process runtime
+// runs them in its own, each on a token identity named after its import.
 
 #include <chrono>
 #include <memory>

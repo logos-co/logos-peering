@@ -348,9 +348,12 @@ Facade::~Facade() { stop(); }
 bool Facade::start(std::string& error)
 {
     Impl& impl = *impl_;
-    // Calls to peering_module go as this facade, on the runtime's credential.
-    if (lp_token_save("core", impl.options.credential.c_str()) != LP_OK
-        || lp_token_save("capability_module", impl.options.credential.c_str()) != LP_OK) {
+    // Calls to peering_module go as this facade, from a token store of its own: in the
+    // runtime's process, the default one is the runtime's.
+    const char* name = impl.options.name.c_str();
+    const char* credential = impl.options.credential.c_str();
+    if (lp_token_isolate_identity(name) != LP_OK || lp_token_adopt_credential(name, credential) != LP_OK
+        || lp_token_save_for(name, "capability_module", credential) != LP_OK) {
         error = "the facade could not keep its credential";
         return false;
     }
