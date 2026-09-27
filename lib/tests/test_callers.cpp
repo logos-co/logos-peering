@@ -39,8 +39,6 @@ TEST(Callers, RemotePrincipals)
 {
     const auto p = remotePrincipal("11111111-1111-4111-8111-111111111111", "wallet");
     EXPECT_EQ(p["kind"], "remote");
+    EXPECT_EQ(p["peer"], "11111111-1111-4111-8111-111111111111");
     EXPECT_EQ(p["name"], "wallet");
-    const auto op = remoteOperatorPrincipal("11111111-1111-4111-8111-111111111111");
-    EXPECT_EQ(op["kind"], "operator");
-    EXPECT_EQ(op["name"], "@peer:11111111-1111-4111-8111-111111111111");
 }

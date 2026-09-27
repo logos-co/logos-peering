@@ -327,7 +327,7 @@ void importEcho(Runtime& a, Runtime& b, const std::vector<std::string>& allowed)
     ASSERT_TRUE(a.engine("facadeLoaded", json::array({"echo", 1})).value("ok", false));
 }
 
-// B's core_service: an operator endpoint the runtime sets up as the host.
+// B's core_service: the Runtime Control endpoint the runtime sets up as the host.
 struct CoreServiceHost {
     Runtime& runtime;
     PKey key = generateP256();
@@ -381,13 +381,13 @@ struct CoreServiceHost {
     static char* methods(void*) { return heap("[]"); }
 };
 
-// A runtime-less operator dialling the route operatorRoute gave it.
-struct OperatorDial {
-    PeeringService::OperatorRoute route;
+// A runtime-less tool dialling the session runtimeControlSession gave it.
+struct ControlDial {
+    PeeringService::RuntimeControlSession route;
     lp_client* client = nullptr;
 
-    explicit OperatorDial(PeeringService::OperatorRoute r) : route(std::move(r)) {}
-    ~OperatorDial()
+    explicit ControlDial(PeeringService::RuntimeControlSession r) : route(std::move(r)) {}
+    ~ControlDial()
     {
         if (client) lp_client_destroy(client);
     }
@@ -396,7 +396,7 @@ struct OperatorDial {
     {
         client = lp_client_create("core_service", "logosctl", R"({"protocol":"tls_tcp"})", nullptr);
         lp_client_set_tls_credential(client, route.chainPem.c_str(), route.keyPem.c_str());
-        lp_client_set_session_hook(client, &OperatorDial::dial, &OperatorDial::hello, this);
+        lp_client_set_session_hook(client, &ControlDial::dial, &ControlDial::hello, this);
         char* out = nullptr;
         char* err = nullptr;
         const int status = lp_invoke(client, "whoami", "[]", 5000, &out, &err);
@@ -408,25 +408,18 @@ struct OperatorDial {
 
     static char* dial(const char*, void* userData)
     {
-        return heap(static_cast<OperatorDial*>(userData)->route.dial.dump());
+        return heap(static_cast<ControlDial*>(userData)->route.dial.dump());
     }
     static char* hello(const char*, void* userData)
     {
-        return heap(static_cast<OperatorDial*>(userData)->route.hello.dump());
+        return heap(static_cast<ControlDial*>(userData)->route.hello.dump());
     }
 };
 
-json operatorConfig()
+// A redeems B's runtime-control invite, and B approves it.
+void pairForRuntimeControl(Runtime& a, Runtime& b)
 {
-    return {{"control", {{"enabled", true}, {"host", "127.0.0.1"}, {"port", 0}}},
-            {"exports", {{"enabled", true}}},
-            {"operator", true}};
-}
-
-// A redeems B's operator invite, and B approves it.
-void pairAsOperator(Runtime& a, Runtime& b)
-{
-    const json invite = b.manage("createInvite", json::array({"operator", 600}));
+    const json invite = b.manage("createInvite", json::array({"runtime-control", 600}));
     ASSERT_TRUE(invite.contains("invite")) << invite.dump();
     ASSERT_FALSE(a.manage("redeemInvite", json::array({invite["invite"]})).contains("error"));
     std::string id;
@@ -453,10 +446,10 @@ TEST(PeeringService, AnInviteEnrollsBothSides)
     const json bPeers = b.manage("peers")["peers"];
     EXPECT_EQ(aPeers[0]["runtime_id"], b.id());
     EXPECT_EQ(aPeers[0]["display_name"], "office");
-    EXPECT_EQ(aPeers[0]["granted_role"], "peer");
+    EXPECT_EQ(aPeers[0]["granted_uses"], json::array({"provider-access"}));
     EXPECT_EQ(aPeers[0]["control_port"], b.port());
     EXPECT_EQ(bPeers[0]["runtime_id"], a.id());
-    EXPECT_EQ(bPeers[0]["role"], "peer");
+    EXPECT_EQ(bPeers[0]["uses"], json::array({"provider-access"}));
     EXPECT_EQ(bPeers[0]["control_port"], a.port());
     EXPECT_EQ(bPeers[0]["addresses"], json::array({"127.0.0.1"}));
     EXPECT_TRUE(a.sawEvent("peersChanged"));
@@ -560,10 +553,11 @@ TEST(PeeringService, CallersAreGated)
     EXPECT_TRUE(b.call(CallerRef::named("auto"), "setExport", export1).value("ok", false));
     EXPECT_TRUE(b.call(CallerRef::named("auto"), "removeExport", json::array({"echo_module"}))
                     .value("ok", false));
-    EXPECT_FALSE(b.call(CallerRef::named("@peer:x"), "peers").contains("error"));
-    EXPECT_EQ(b.call(CallerRef::named("@peer:x"), "setExport", export1).value("error", ""),
-              "NOT_AUTHORISED");
-    EXPECT_EQ(b.call(CallerRef::named("@peer:x"), "createInvite", json::array({"peer", 60}))
+    // A remote consumer's call core_service forwarded.
+    const CallerRef remote = CallerRef::named("@peer:0f8fad5b-d9cb-469f-a165-70867728950e:logosctl");
+    EXPECT_FALSE(b.call(remote, "peers").contains("error"));
+    EXPECT_EQ(b.call(remote, "setExport", export1).value("error", ""), "NOT_AUTHORISED");
+    EXPECT_EQ(b.call(remote, "createInvite", json::array({"peer", 60}))
                   .value("error", ""), "NOT_AUTHORISED");
     // Named operators and the shell manage.
     EXPECT_TRUE(b.call(CallerRef::named("alice"), "setExport", export1).value("ok", false));
@@ -630,7 +624,7 @@ TEST(PeeringService, APolicyMayNameEveryExport)
     a.configure();
     b.configure();
     pairByInvite(a, b);
-    EXPECT_TRUE(b.manage("setPolicy", json::array({{{a.id() + "/*", {"core_service"}}}})).contains("error"));
+    EXPECT_TRUE(b.manage("setPolicy", json::array({{{a.id() + "/*", {"capability_module"}}}})).contains("error"));
     ASSERT_TRUE(b.manage("setPolicy", json::array({{{a.id() + "/wallet", {"*"}}}})).value("ok", false));
     ASSERT_TRUE(b.manage("setExport", json::array({"echo_module", json::object()})).value("ok", false));
     ASSERT_TRUE(b.engine("exportLoaded", json::array({"echo_module", 1})).value("ok", false));
@@ -991,52 +985,116 @@ TEST(PeeringService, ALocalInviteIsNotRedeemedFromAnotherAddress)
     EXPECT_EQ(b.manage("peers")["peers"].size(), 0u);
 }
 
-TEST(PeeringService, AnOperatorReachesCoreServiceAsItsPeer)
+TEST(PeeringService, RuntimeControlBindsTheConsumerTheHelloNames)
 {
     Runtime a("laptop");
     Runtime b("office");
     // Like logosctl: no endpoint of its own.
     a.configure({{"control", {{"enabled", false}}}, {"exports", {{"enabled", false}}}});
-    b.configure(operatorConfig());
+    b.configure({{"runtime_control", true}});
     CoreServiceHost core(b);
-    pairAsOperator(a, b);
+    pairForRuntimeControl(a, b);
     core.refreshAnchors();
-    EXPECT_EQ(a.manage("peers")["peers"][0]["granted_role"], "operator");
-    EXPECT_EQ(b.manage("peers")["peers"][0]["role"], "operator");
+    const json both = json::array({"provider-access", "runtime-control"});
+    EXPECT_EQ(a.manage("peers")["peers"][0]["granted_uses"], both);
+    EXPECT_EQ(b.manage("peers")["peers"][0]["uses"], both);
 
     std::string error;
-    const auto route = a.service->operatorRoute(b.id(), &error);
-    ASSERT_TRUE(route.has_value()) << error;
-    EXPECT_EQ(route->hello["module"], "core_service");
+    const auto session = a.service->runtimeControlSession(b.id(), "logosctl", &error);
+    ASSERT_TRUE(session.has_value()) << error;
+    EXPECT_EQ(session->hello, json({{"module", "logos_runtime_control"},
+                                    {"consumer", {{"runtime_instance_id", a.id()},
+                                                  {"module_instance_id", "logosctl"}}}}));
     json who;
-    OperatorDial dial(*route);
-    ASSERT_EQ(dial.whoami(&who), LP_OK);
-    EXPECT_EQ(who, json({{"kind", "operator"}, {"name", "@peer:" + a.id()}}));
+    {
+        ControlDial dial(*session);
+        ASSERT_EQ(dial.whoami(&who), LP_OK);
+        EXPECT_EQ(who, json({{"kind", "remote"}, {"peer", a.id()}, {"name", "logosctl"}}));
+    }
+    // Another runtime's consumer, a bad name, or a ticket: refused.
+    auto other = *session;
+    other.hello["consumer"]["runtime_instance_id"] = b.id();
+    EXPECT_NE(ControlDial(other).whoami(&who), LP_OK);
+    other = *session;
+    other.hello["consumer"]["module_instance_id"] = "log osctl";
+    EXPECT_NE(ControlDial(other).whoami(&who), LP_OK);
+    other = *session;
+    other.hello = {{"ticket", "x"}, {"module", "core_service"}};
+    EXPECT_NE(ControlDial(other).whoami(&who), LP_OK);
+
+    // Removing the peer revokes it and ends admission.
+    ASSERT_TRUE(b.manage("removePeer", json::array({a.id()})).value("ok", false));
+    EXPECT_TRUE(b.sawEvent("routesRevoked"));
+    EXPECT_NE(ControlDial(*session).whoami(&who), LP_OK);
 }
 
-TEST(PeeringService, OnlyAnOperatorPairingGetsARouteToCoreService)
+TEST(PeeringService, OnlyARuntimeControlEnrollmentGetsASession)
 {
     Runtime a("laptop");
     Runtime b("office");
     a.configure();
-    b.configure(operatorConfig());
+    b.configure({{"runtime_control", true}});
     CoreServiceHost core(b);
     pairByInvite(a, b);
     std::string error;
-    EXPECT_FALSE(a.service->operatorRoute(b.id(), &error).has_value());
-    EXPECT_EQ(error.rfind("NOT_AN_OPERATOR", 0), 0u) << error;
-    EXPECT_FALSE(a.service->operatorRoute("nobody", &error).has_value());
+    EXPECT_FALSE(a.service->runtimeControlSession(b.id(), "logosctl", &error).has_value());
+    EXPECT_EQ(error.rfind("NOT_RUNTIME_CONTROL", 0), 0u) << error;
+    EXPECT_FALSE(a.service->runtimeControlSession("nobody", "logosctl", &error).has_value());
     EXPECT_EQ(error, "NO_SUCH_PEER");
+    EXPECT_FALSE(a.service->runtimeControlSession(b.id(), "bad name", &error).has_value());
 }
 
-TEST(PeeringService, WithoutOperatorTheHostSpeaksForNoEndpoint)
+TEST(PeeringService, TheRuntimeControlSwitchGatesTheEndpoint)
+{
+    Runtime a("laptop");
+    Runtime b("office");
+    a.configure({{"control", {{"enabled", false}}}, {"exports", {{"enabled", false}}}});
+    b.configure({{"runtime_control", true}});
+    {
+        CoreServiceHost core(b);
+        pairForRuntimeControl(a, b);
+    }
+    b.restart();
+    b.configure();
+    std::string error;
+    EXPECT_FALSE(a.service->runtimeControlSession(b.id(), "logosctl", &error).has_value());
+    EXPECT_EQ(error, "NOT_AUTHORISED");
+}
+
+TEST(PeeringService, WithoutRuntimeControlTheHostSpeaksForNoEndpoint)
 {
     Runtime b("office");
     b.configure();
     const PKey key = generateP256();
     EXPECT_EQ(b.engine("issueCertificate", json::array({"provider", makeCsrPem(key.get())})).value("error", ""),
               "NOT_AUTHORISED");
-    EXPECT_EQ(b.manage("createInvite", json::array({"operator", 600})).value("error", ""), "OPERATOR_DISABLED");
+    EXPECT_EQ(b.manage("createInvite", json::array({"runtime-control", 600})).value("error", ""),
+              "RUNTIME_CONTROL_DISABLED");
+}
+
+TEST(PeeringService, APolicyGrantsMethodsAndItsExactKeyWins)
+{
+    Runtime a("laptop");
+    Runtime b("office");
+    a.configure();
+    b.configure();
+    pairByInvite(a, b);
+    const std::string wallet = a.id() + "/wallet";
+    const std::string all = a.id() + "/*";
+    for (const json& bad : {json{{wallet, {{"echo_module", "all"}}}}, json{{wallet, {{"echo_module", {1}}}}},
+                            json{{wallet, {{"capability_module", "*"}}}}, json{{wallet, "echo_module"}}})
+        EXPECT_TRUE(b.manage("setPolicy", json::array({bad})).contains("error")) << bad.dump();
+    // The exact key wins, and its [] denies what <peer>/* grants.
+    const json policy = {{all, {{"echo_module", "*"}, {"core_service", {"getStatus"}}}},
+                         {wallet, {{"echo_module", json::array()}}}};
+    ASSERT_TRUE(b.manage("setPolicy", json::array({policy})).value("ok", false));
+    ASSERT_TRUE(b.manage("setExport", json::array({"echo_module", json::object()})).value("ok", false));
+    ASSERT_TRUE(b.engine("exportLoaded", json::array({"echo_module", 1})).value("ok", false));
+    ExportHost host(b, "echo_module");
+    importEcho(a, b, {"wallet", "miner"});
+    Dialer facade(a, "echo");
+    EXPECT_EQ(facade.requestRoute("wallet").value("error", ""), "NOT_AUTHORISED");
+    EXPECT_TRUE(facade.requestRoute("miner").contains("ticket"));
 }
 
 TEST(PeeringService, TheAuthorityDecidesRoutesAndANewPolicyEndsWhatItDenies)

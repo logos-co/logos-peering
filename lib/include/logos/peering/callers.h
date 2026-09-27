@@ -21,8 +21,7 @@ std::optional<std::string> consumerForCallerJson(const std::string& callerJson);
 // A consumer name as it may travel between runtimes.
 bool isValidConsumer(const std::string& consumer);
 
-// What a provider sees for a remote consumer, and for a remote operator.
+// What a provider sees for a remote consumer.
 nlohmann::json remotePrincipal(const std::string& peerRuntimeId, const std::string& consumer);
-nlohmann::json remoteOperatorPrincipal(const std::string& peerRuntimeId);
 
 } // namespace logos::peering

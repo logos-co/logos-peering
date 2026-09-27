@@ -37,14 +37,16 @@ struct PeeringConfig {
     // machine, redeemable over loopback only and replaced once used.
     bool localInvite = false;
     std::string localInvitePath; // empty: <state>/local-invite
-    std::string localInviteRole = "peer";
+    bool localInviteRuntimeControl = false; // pairs for Runtime Control too
     // What a runtime paired through it may call ("*": every export).
     std::vector<std::string> localInviteAllow;
     bool exports = false;
     std::uint16_t exportPortMin = 0;
     std::uint16_t exportPortMax = 0;
     std::map<std::string, ExportRule> exportModules;
-    bool operatorRoutes = false;
+    // core_service's listener serves `logos_runtime_control` to the peers enrolled
+    // for it (the spec's runtime_control_enabled).
+    bool runtimeControl = false;
     bool announce = false;
     bool browse = false;
     std::map<std::string, ImportRule> imports;

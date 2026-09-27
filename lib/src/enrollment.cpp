@@ -35,7 +35,28 @@ bool readField(const nlohmann::json& value, const char* key, T& out)
     }
 }
 
+bool hasUse(const std::vector<std::string>& uses, const char* use)
+{
+    return std::find(uses.begin(), uses.end(), use) != uses.end();
+}
+
+// provider-access, and runtime-control at most once besides it.
+bool validUses(const std::vector<std::string>& uses)
+{
+    if (!hasUse(uses, kProviderAccess) || uses.size() > 2) return false;
+    return uses.size() == 1 || (uses[0] != uses[1] && hasUse(uses, kRuntimeControl));
+}
+
 } // namespace
+
+std::vector<std::string> usesForRole(const std::string& role)
+{
+    if (role == kRuntimeControl || role == "operator") return {kProviderAccess, kRuntimeControl};
+    return {kProviderAccess};
+}
+
+bool Enrollment::runtimeControl() const { return hasUse(uses, kRuntimeControl); }
+bool Enrollment::grantedRuntimeControl() const { return hasUse(grantedUses, kRuntimeControl); }
 
 std::string Enrollment::anchorPin() const
 {
@@ -52,8 +73,8 @@ nlohmann::json Enrollment::toJson() const
             {"trust_anchor", trustAnchorPem},
             {"subject_public_keys", subjectPublicKeys},
             {"alias", alias},
-            {"role", role},
-            {"granted_role", grantedRole},
+            {"uses", uses},
+            {"granted_uses", grantedUses},
             {"display_name", displayName},
             {"addresses", addresses},
             {"control_port", controlPort}};
@@ -66,20 +87,33 @@ std::optional<Enrollment> Enrollment::fromJson(const nlohmann::json& value, std:
         || !readField(value, "profile", e.profile) || !readField(value, "revision", e.revision)
         || !readField(value, "status", e.status) || !readField(value, "trust_anchor", e.trustAnchorPem)
         || !readField(value, "subject_public_keys", e.subjectPublicKeys)
-        || !readField(value, "alias", e.alias) || !readField(value, "role", e.role)) {
+        || !readField(value, "alias", e.alias)) {
         setError(error, "an enrollment is missing a field");
         return std::nullopt;
     }
+    // Before uses there was a role, "operator" for Runtime Control.
+    std::string role;
+    if (value.contains("uses")) {
+        if (!readField(value, "uses", e.uses)) {
+            setError(error, "an enrollment's uses are not a list of names");
+            return std::nullopt;
+        }
+    } else if (readField(value, "role", role)) {
+        e.uses = usesForRole(role);
+    } else {
+        setError(error, "an enrollment is missing a field");
+        return std::nullopt;
+    }
+    if (value.contains("granted_uses")) readField(value, "granted_uses", e.grantedUses);
+    else if (readField(value, "granted_role", role)) e.grantedUses = usesForRole(role);
     readField(value, "display_name", e.displayName);
-    readField(value, "granted_role", e.grantedRole);
     readField(value, "addresses", e.addresses);
     readField(value, "control_port", e.controlPort);
     const bool keysOk = !e.subjectPublicKeys.empty() && e.subjectPublicKeys.size() <= 2
                         && std::all_of(e.subjectPublicKeys.begin(), e.subjectPublicKeys.end(), isPin);
     if (!isUuid(e.runtimeInstanceId) || e.profile != "logos.remote.tls-tcp" || e.revision == 0
         || (e.status != "active" && e.status != "suspended" && e.status != "revoked") || !keysOk
-        || !isValidAlias(e.alias) || (e.role != "peer" && e.role != "operator")
-        || (e.grantedRole != "peer" && e.grantedRole != "operator") || e.addresses.size() > 8
+        || !isValidAlias(e.alias) || !validUses(e.uses) || !validUses(e.grantedUses) || e.addresses.size() > 8
         || (!e.displayName.empty() && !isValidDisplayName(e.displayName))
         || e.anchorPin().empty()) {
         setError(error, "an enrollment is malformed");

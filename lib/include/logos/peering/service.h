@@ -79,17 +79,19 @@ public:
     // The control endpoint's bound port, 0 without one.
     std::uint16_t controlPort() const;
 
-    // Remote Runtime Control from a tool with no runtime (logosctl --remote): a
-    // route to `peer`'s core_service, which `peer` must have paired this runtime
-    // to as an operator, and a client credential made here for it alone.
-    struct OperatorRoute {
+    // Remote Runtime Control from a tool with no runtime (logosctl --remote): how to
+    // reach `peer`'s `logos_runtime_control` endpoint as this runtime's module instance
+    // `consumer`, and a client credential made for it alone. `peer` must have enrolled
+    // this runtime for runtime-control; its policy then decides each call.
+    struct RuntimeControlSession {
         nlohmann::json dial;  // the tls_tcp dial hook's answer
         nlohmann::json hello; // the Hello to send after the handshake
         std::string chainPem;
         std::string keyPem;
         std::int64_t lifetimeMs = 0;
     };
-    std::optional<OperatorRoute> operatorRoute(const std::string& peer, std::string* error = nullptr);
+    std::optional<RuntimeControlSession> runtimeControlSession(const std::string& peer, const std::string& consumer,
+                                                               std::string* error = nullptr);
 
     struct Impl;
 

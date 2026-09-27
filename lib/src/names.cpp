@@ -17,6 +17,14 @@ bool isValidModuleName(const std::string& name)
     return true;
 }
 
+bool isValidMethodName(const std::string& name)
+{
+    if (name.empty() || name.size() > 128 || isDigit(name[0])) return false;
+    for (const char c : name)
+        if (!(isLower(c) || isUpper(c) || isDigit(c) || c == '_')) return false;
+    return true;
+}
+
 bool isValidAlias(const std::string& alias)
 {
     if (alias.empty() || alias.size() > 63 || !(isLower(alias[0]) || isDigit(alias[0]))) return false;

@@ -50,6 +50,8 @@ constexpr auto kFinishedKept = std::chrono::seconds(60);
 // How often a control endpoint that could not listen (its port still held) tries again.
 constexpr auto kControlRetry = std::chrono::seconds(1);
 constexpr std::int64_t kControlSessionMs = 3600 * 1000;
+// The spec's name for the Runtime Control endpoint (logos-lips runtime §9).
+constexpr const char* kRuntimeControlEndpoint = "logos_runtime_control";
 constexpr int kLinkTimeoutMs = 15000;
 constexpr std::int64_t kMaxFrame = 16 * 1024 * 1024;
 constexpr std::size_t kMaxIncomingPairings = 16;
@@ -467,8 +469,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         const auto s = self();
         if (!port || !s) return;
         if (!digest.empty()) invites.revoke(digest);
-        const std::string role =
-            cfg.localInviteRole == "operator" && cfg.operatorRoutes ? "operator" : "peer";
+        const std::string role = cfg.localInviteRuntimeControl && cfg.runtimeControl ? "runtime-control" : "peer";
         const std::string secret = invites.issue(role, std::chrono::seconds(0), kLocalIssuer);
         Invite invite;
         invite.runtimeId = s->runtimeId;
@@ -734,7 +735,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
                     {"peer_display_id", in.displayId},
                     {"peer_name", in.responder->initiatorDisplayName()},
                     {"peer_runtime_id", in.responder->initiatorRuntimeId()},
-                    {"role", in.responder->grantedRole()},
+                    {"uses", usesForRole(in.responder->grantedRole())},
                     {"needs_approval", in.responder->needsApproval()},
                     {"expires_ms", msUntil(in.expires)}};
     }
@@ -752,6 +753,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         }
         if (method == "listExports") return listExportsFor(peer);
         if (method == "establishRoute") return establishRoute(peer, objectArg(args, 0));
+        if (method == "runtimeControlEndpoint") return runtimeControlEndpointFor(peer);
         if (method == "renewRoute") {
             const auto id = textArg(args, 0);
             if (!id) return fault("INVALID_ARGUMENT");
@@ -763,6 +765,16 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         }
         if (method == "peerUpdate") return fault("NOT_SUPPORTED");
         return fault("NO_SUCH_METHOD");
+    }
+
+    // Where core_service listens for Runtime Control, for a peer enrolled for it.
+    json runtimeControlEndpointFor(const std::string& peer)
+    {
+        std::lock_guard<std::mutex> lock(m);
+        const auto e = enrollments.find(peer);
+        if (!config.runtimeControl || !e || !e->runtimeControl() || !corePort || corePin.empty())
+            return fault("NOT_AUTHORISED");
+        return json{{"port", corePort}, {"server_pin", corePin}};
     }
 
     json pairingCall(const std::string& sid, const std::string& method, const json& args)
@@ -815,8 +827,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
                 e.trustAnchorPem = in.rootPem;
                 e.subjectPublicKeys = {in.leafPin};
                 e.alias = uniqueAliasLocked(outcome.peerDisplayName);
-                e.role = outcome.role;
-                e.grantedRole = "peer";
+                e.uses = usesForRole(outcome.role);
                 e.displayName = outcome.peerDisplayName;
                 if (!in.address.empty()) e.addresses = {in.address};
                 e.controlPort = in.controlPort;
@@ -827,7 +838,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
                     in.result = json{{"status", "rejected"}, {"reason", error}};
                     return in.result;
                 }
-                audit.record("paired", {{"peer", e.runtimeInstanceId}, {"role", e.role},
+                audit.record("paired", {{"peer", e.runtimeInstanceId}, {"uses", e.uses},
                                         {"direction", "incoming"}});
                 // What the local invite allows, the runtime it paired gets.
                 if (*in.viaLocalInvite && !config.localInviteAllow.empty()) {
@@ -878,27 +889,44 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         return all;
     }
 
+    // One policy entry's grant on `target`: "*", a method list, or null. The exact
+    // target wins over "*", which never covers core_service.
+    static json entryGrant(const json& entry, const std::string& target)
+    {
+        const bool wild = target != "core_service";
+        if (entry.is_array()) {
+            for (const auto& t : entry)
+                if (t == target || (wild && t == "*")) return "*";
+            return nullptr;
+        }
+        if (!entry.is_object()) return nullptr;
+        auto grant = entry.find(target);
+        if (grant == entry.end() && wild) grant = entry.find("*");
+        return grant == entry.end() ? json() : *grant;
+    }
+
+    static bool grantsAny(const json& grant) { return grant == "*" || (grant.is_array() && !grant.empty()); }
+
+    // The exact <peer>/<consumer> key wins over <peer>/*; entries never merge.
+    json grantLocked(const std::string& peer, const std::string& consumer, const std::string& target) const
+    {
+        auto entry = policy.find(peer + "/" + consumer);
+        if (entry == policy.end()) entry = policy.find(peer + "/*");
+        return entry == policy.end() ? json() : entryGrant(*entry, target);
+    }
+
     bool policyAllowsLocked(const std::string& peer, const std::string& consumer,
                             const std::string& target) const
     {
-        for (const std::string& key : {peer + "/" + consumer, peer + "/*"}) {
-            const auto it = policy.find(key);
-            if (it == policy.end() || !it->is_array()) continue;
-            for (const auto& t : *it)
-                if (t.is_string() && (t.get<std::string>() == target || t.get<std::string>() == "*"))
-                    return true;
-        }
-        return false;
+        return grantsAny(grantLocked(peer, consumer, target));
     }
 
+    // Whether some consumer of `peer` may call `target`.
     bool policyNamesPeerLocked(const std::string& peer, const std::string& target) const
     {
-        for (const auto& item : policy.items()) {
-            if (item.key().rfind(peer + "/", 0) != 0 || !item.value().is_array()) continue;
-            for (const auto& t : item.value())
-                if (t.is_string() && (t.get<std::string>() == target || t.get<std::string>() == "*"))
-                    return true;
-        }
+        for (const auto& item : policy.items())
+            if (item.key().rfind(peer + "/", 0) == 0 && grantsAny(entryGrant(item.value(), target)))
+                return true;
         return false;
     }
 
@@ -937,7 +965,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         }
         std::set<std::string> revoke;
         for (const Route& r : live) {
-            if (revoke.count(r.peer) || r.scope == "operator") continue;
+            if (revoke.count(r.peer)) continue;
             bool keep = false;
             if (r.scope == "look") {
                 std::lock_guard<std::mutex> lock(m);
@@ -976,49 +1004,39 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         std::string serverPin;
         std::int64_t epoch = 0;
         std::string rootPin;
-        const bool operatorRoute = target == "core_service";
         {
             std::lock_guard<std::mutex> lock(m);
             const auto e = enrollments.find(peer);
             if (!e || e->status != "active") return refuse("not enrolled");
             rootPin = e->anchorPin();
-            if (operatorRoute) {
-                if (e->role != "operator" || !config.operatorRoutes || !corePort || corePin.empty())
-                    return refuse("no operator route");
-                port = corePort;
-                serverPin = corePin;
-            } else {
-                const auto all = exportsLocked();
-                const auto state = exportStates.find(target);
-                if (!config.exports || !all.count(target) || state == exportStates.end()
-                    || !state->second.loaded || !state->second.port || state->second.providerPin.empty())
-                    return refuse("not exported or not loaded");
-                port = state->second.port;
-                serverPin = state->second.providerPin;
-                epoch = state->second.epoch;
-            }
+            const auto all = exportsLocked();
+            const auto state = exportStates.find(target);
+            if (!config.exports || !all.count(target) || state == exportStates.end()
+                || !state->second.loaded || !state->second.port || state->second.providerPin.empty())
+                return refuse("not exported or not loaded");
+            port = state->second.port;
+            serverPin = state->second.providerPin;
+            epoch = state->second.epoch;
         }
         bool lookOnly = false;
-        if (!operatorRoute) {
-            const std::optional<bool> allowed = decideRoute(peer, consumer, target);
-            if (!allowed) {
-                audit.record("route_evaluation_failed", {{"peer", peer}, {"consumer", consumer},
-                                                         {"target", target}});
-                return fault("NOT_AUTHORISED");
-            }
-            // A facade's own session may look and listen wherever one of its
-            // runtime's consumers may call.
-            if (!*allowed && consumer == "runtime") {
-                std::lock_guard<std::mutex> lock(m);
-                lookOnly = policyNamesPeerLocked(peer, target);
-            }
-            if (!*allowed && !lookOnly) return refuse("policy");
+        const std::optional<bool> allowed = decideRoute(peer, consumer, target);
+        if (!allowed) {
+            audit.record("route_evaluation_failed", {{"peer", peer}, {"consumer", consumer},
+                                                     {"target", target}});
+            return fault("NOT_AUTHORISED");
         }
+        // A facade's own session may look and listen wherever one of its
+        // runtime's consumers may call.
+        if (!*allowed && consumer == "runtime") {
+            std::lock_guard<std::mutex> lock(m);
+            lookOnly = policyNamesPeerLocked(peer, target);
+        }
+        if (!*allowed && !lookOnly) return refuse("policy");
         Route route;
         route.peer = peer;
         route.consumer = consumer;
         route.target = target;
-        route.scope = operatorRoute ? "operator" : lookOnly ? "look" : "calls";
+        route.scope = lookOnly ? "look" : "calls";
         route.clientPin = clientPin;
         route.endpointEpoch = static_cast<std::uint64_t>(epoch);
         route = routes.add(route, kRouteLifetime);
@@ -1065,7 +1083,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
 
     bool isCoreServiceLocked(const CallerRef& c) const
     {
-        return c.kind == CallerRef::Kind::Module && c.name == "core_service" && config.operatorRoutes;
+        return c.kind == CallerRef::Kind::Module && c.name == "core_service" && config.runtimeControl;
     }
 
     bool isFacadeLocked(const CallerRef& c) const
@@ -1323,6 +1341,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
     {
         if (!request || !request->contains("hello") || !(*request)["hello"].is_object())
             return fault("NOT_AUTHORISED");
+        if (caller.name == "core_service") return admitRuntimeControl(*request);
         const json& hello = (*request)["hello"];
         const std::string ticket = hello.value("ticket", "");
         const std::string module = hello.value("module", "");
@@ -1356,14 +1375,39 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
             const auto e = enrollments.find(route->peer);
             if (!e || e->status != "active" || e->anchorPin() != rootPin) return fault("NOT_AUTHORISED");
         }
-        const json principal = route->target == "core_service"
-            ? remoteOperatorPrincipal(route->peer) : remotePrincipal(route->peer, route->consumer);
-        return json{{"caller", principal},
+        return json{{"caller", remotePrincipal(route->peer, route->consumer)},
                     {"lifetime_ms", msUntil(route->expires)},
                     {"session", {{"peer", route->peer},
                                  {"route", route->id},
                                  {"generation", route->generation},
                                  {"calls", route->scope != "look"}}}};
+    }
+
+    // A Runtime Control session (logos-lips runtime §9): no ticket. The Hello names the
+    // consumer, a module instance of the enrolled runtime whose root the TLS chain proves;
+    // core_service then decides each of its calls.
+    json admitRuntimeControl(const json& request)
+    {
+        const json& hello = request["hello"];
+        const json consumer = hello.value("consumer", json());
+        const auto chain = presentedChain(request.value("peer_chain", json()), Role::Client);
+        if (!request.value("anchored", false) || hello.value("module", "") != kRuntimeControlEndpoint
+            || !consumer.is_object() || !chain)
+            return fault("NOT_AUTHORISED");
+        const std::string peer = consumer.value("runtime_instance_id", "");
+        const std::string module = consumer.value("module_instance_id", "");
+        if (!isValidModuleName(module)) return fault("NOT_AUTHORISED");
+        {
+            std::lock_guard<std::mutex> lock(m);
+            const auto e = enrollments.find(peer);
+            if (!config.runtimeControl || !e || e->status != "active" || !e->runtimeControl()
+                || e->anchorPin() != spkiPin(chain->rootSpki))
+                return fault("NOT_AUTHORISED");
+        }
+        audit.record("runtime_control_session", {{"peer", peer}, {"consumer", module}});
+        return json{{"caller", remotePrincipal(peer, module)},
+                    {"lifetime_ms", kControlSessionMs},
+                    {"session", {{"peer", peer}, {"generation", routes.generation(peer)}, {"calls", true}}}};
     }
 
     json noteEndpoints(const CallerRef& caller, const json& endpoints)
@@ -1491,15 +1535,16 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         return reply;
     }
 
-    std::optional<PeeringService::OperatorRoute> operatorRoute(const std::string& peerArg, std::string* error)
+    std::optional<PeeringService::RuntimeControlSession> runtimeControlSession(
+        const std::string& peerArg, const std::string& consumer, std::string* error)
     {
-        const auto fail = [&](const std::string& why) -> std::optional<PeeringService::OperatorRoute> {
+        const auto fail = [&](const std::string& why) -> std::optional<PeeringService::RuntimeControlSession> {
             if (error) *error = why;
             return std::nullopt;
         };
+        if (!isValidModuleName(consumer)) return fail("INVALID_ARGUMENT: " + consumer);
         std::string peer;
         Enrollment e;
-        std::string consumer;
         {
             std::lock_guard<std::mutex> lock(m);
             const auto resolved = resolvePeerLocked(peerArg);
@@ -1507,31 +1552,29 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
             peer = *resolved;
             const auto found = enrollments.find(peer);
             if (!found || found->status != "active") return fail("NOT_PAIRED");
-            if (found->grantedRole != "operator")
-                return fail("NOT_AN_OPERATOR: " + found->alias + " paired this runtime as a peer");
+            if (!found->grantedRuntimeControl())
+                return fail("NOT_RUNTIME_CONTROL: " + found->alias + " enrolled this runtime for provider access only");
             e = *found;
-            consumer = config.shell.empty() ? "operator" : config.shell;
         }
         const auto s = self();
         if (!s) return fail("IDENTITY_UNAVAILABLE");
+        const json endpoint = callPeer(peer, "runtimeControlEndpoint", json::array());
+        if (isFault(endpoint)) return fail(endpoint["error"].get<std::string>());
+        if (!endpoint.is_object() || !endpoint.contains("port")) return fail("MALFORMED_REPLY");
         const PKey key = generateP256();
-        const Bytes spki = spkiDer(key.get());
         std::string why;
-        const auto leaf = options.identity->issue(Role::Client, spki,
-            std::chrono::duration_cast<std::chrono::seconds>(kRouteLifetime), &why);
+        const auto leaf = options.identity->issue(Role::Client, spkiDer(key.get()),
+            std::chrono::seconds(kControlSessionMs / 1000), &why);
         if (!leaf) return fail("IDENTITY_UNAVAILABLE: " + why);
-        const json reply = callPeer(peer, "establishRoute",
-            json::array({{{"consumer", consumer}, {"target", "core_service"}, {"client_pin", spkiPin(spki)}}}));
-        if (isFault(reply)) return fail(reply["error"].get<std::string>());
-        if (!reply.is_object() || !reply.contains("ticket")) return fail("MALFORMED_REPLY");
-        PeeringService::OperatorRoute route;
-        route.dial = {{"addresses", e.addresses}, {"port", reply.value("port", 0)},
-                      {"server_pin", reply.value("server_pin", "")}, {"anchors", e.trustAnchorPem}};
-        route.hello = {{"ticket", reply["ticket"]}, {"module", "core_service"}};
-        route.chainPem = *leaf + s->rootPem;
-        route.keyPem = privateKeyPem(key.get());
-        route.lifetimeMs = reply.value("lifetime_ms", std::int64_t{0});
-        return route;
+        PeeringService::RuntimeControlSession session;
+        session.dial = {{"addresses", e.addresses}, {"port", endpoint.value("port", 0)},
+                        {"server_pin", endpoint.value("server_pin", "")}, {"anchors", e.trustAnchorPem}};
+        session.hello = {{"module", kRuntimeControlEndpoint},
+                         {"consumer", {{"runtime_instance_id", s->runtimeId}, {"module_instance_id", consumer}}}};
+        session.chainPem = *leaf + s->rootPem;
+        session.keyPem = privateKeyPem(key.get());
+        session.lifetimeMs = kControlSessionMs;
+        return session;
     }
 
     // What an enrolled peer exports to this runtime, asked over the control link.
@@ -1625,7 +1668,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
                     {"configured", configured},
                     {"control", control},
                     {"exports", config.exports},
-                    {"operator", config.operatorRoutes},
+                    {"runtime_control", config.runtimeControl},
                     {"peers", enrollments.all().size()},
                     {"pairing_window_ms", windowOpenLocked() ? msUntil(windowUntil) : 0},
                     {"invites", invites.live().size()}};
@@ -1641,8 +1684,8 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
                            {"alias", e.alias},
                            {"display_name", e.displayName},
                            {"display_id", anchor ? displayIdFor(spkiDer(anchor.get())) : ""},
-                           {"role", e.role},
-                           {"granted_role", e.grantedRole},
+                           {"uses", e.uses},
+                           {"granted_uses", e.grantedUses},
                            {"status", e.status},
                            {"addresses", e.addresses},
                            {"control_port", e.controlPort}});
@@ -1715,7 +1758,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
     json createInvite(const CallerRef& caller, const std::optional<std::string>& role,
                       const std::optional<std::int64_t>& ttl)
     {
-        if (!role || (*role != "peer" && *role != "operator") || !ttl) return fault("INVALID_ARGUMENT");
+        if (!role || (*role != "peer" && *role != "runtime-control") || !ttl) return fault("INVALID_ARGUMENT");
         const auto s = self();
         if (!s) return fault("IDENTITY_UNAVAILABLE");
         const std::uint16_t port = boundControlPort();
@@ -1724,7 +1767,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
             std::lock_guard<std::mutex> lock(m);
             if (!config.control) return fault("CONTROL_DISABLED");
             if (!port) return fault("CONTROL_UNAVAILABLE: " + (controlError.empty() ? "not listening" : controlError));
-            if (*role == "operator" && !config.operatorRoutes) return fault("OPERATOR_DISABLED");
+            if (*role == "runtime-control" && !config.runtimeControl) return fault("RUNTIME_CONTROL_DISABLED");
             host = !config.advertise.empty() ? config.advertise
                  : config.controlHost != "0.0.0.0" && config.controlHost != "::" ? config.controlHost
                  : guessAddress();
@@ -1844,7 +1887,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
             std::lock_guard<std::mutex> lock(m);
             if (enrollments.find(invite->runtimeId)) return fault("ALREADY_PAIRED");
         }
-        return startOutgoing(invite->host, invite->port, invite, "operator");
+        return startOutgoing(invite->host, invite->port, invite, "runtime-control");
     }
 
     json decidePairing(const std::optional<std::string>& id, bool accept)
@@ -2001,6 +2044,24 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         return json{{"ok", true}};
     }
 
+    // [targets], or {target: "*" | [methods]}; core_service only for Runtime Control.
+    static bool validPolicyEntry(const json& entry)
+    {
+        const auto target = [](const std::string& t) { return isPolicyTarget(t) || t == "core_service"; };
+        if (entry.is_array())
+            return std::all_of(entry.begin(), entry.end(),
+                               [&](const json& t) { return t.is_string() && target(t.get<std::string>()); });
+        if (!entry.is_object()) return false;
+        for (const auto& [name, grant] : entry.items()) {
+            if (!target(name)) return false;
+            if (grant == "*") continue;
+            if (!grant.is_array()) return false;
+            for (const auto& method : grant)
+                if (!method.is_string() || !isValidMethodName(method.get<std::string>())) return false;
+        }
+        return true;
+    }
+
     json setPolicy(const json* doc)
     {
         if (!doc) return fault("INVALID_ARGUMENT");
@@ -2010,10 +2071,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
                 return fault("INVALID_ARGUMENT: keys are <runtime id>/<consumer> or <runtime id>/*");
             const std::string consumer = item.key().substr(slash + 1);
             if (consumer != "*" && !isValidConsumer(consumer)) return fault("INVALID_ARGUMENT: " + item.key());
-            if (!item.value().is_array()) return fault("INVALID_ARGUMENT: " + item.key());
-            for (const auto& target : item.value())
-                if (!target.is_string() || !isPolicyTarget(target.get<std::string>()))
-                    return fault("INVALID_ARGUMENT: " + item.key());
+            if (!validPolicyEntry(item.value())) return fault("INVALID_ARGUMENT: " + item.key());
         }
         {
             std::lock_guard<std::mutex> lock(m);
@@ -2091,8 +2149,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
                 e.trustAnchorPem = o.peerRootPem;
                 e.subjectPublicKeys = {o.peerLeafPin};
                 e.alias = uniqueAliasLocked(outcome->peerDisplayName);
-                e.role = "peer";
-                e.grantedRole = outcome->role;
+                e.grantedUses = usesForRole(outcome->role);
                 e.displayName = outcome->peerDisplayName;
                 e.addresses = {o.host};
                 e.controlPort = o.port;
@@ -2100,7 +2157,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
                     o.state = "paired";
                     o.peerRuntimeId = e.runtimeInstanceId;
                     enrolled = true;
-                    audit.record("paired", {{"peer", e.runtimeInstanceId}, {"granted_role", e.grantedRole},
+                    audit.record("paired", {{"peer", e.runtimeInstanceId}, {"granted_uses", e.grantedUses},
                                             {"direction", "outgoing"}});
                 } else {
                     enrollments.load();
@@ -2190,10 +2247,10 @@ json PeeringService::invoke(const CallerRef& caller, const std::string& method, 
 
 std::uint16_t PeeringService::controlPort() const { return impl_->boundControlPort(); }
 
-std::optional<PeeringService::OperatorRoute> PeeringService::operatorRoute(const std::string& peer,
-                                                                           std::string* error)
+std::optional<PeeringService::RuntimeControlSession> PeeringService::runtimeControlSession(
+    const std::string& peer, const std::string& consumer, std::string* error)
 {
-    return impl_->operatorRoute(peer, error);
+    return impl_->runtimeControlSession(peer, consumer, error);
 }
 
 } // namespace logos::peering

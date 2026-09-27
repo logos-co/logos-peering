@@ -28,13 +28,19 @@ std::optional<Bytes> bytesField(const nlohmann::json& body, const char* key, std
     return raw;
 }
 
+// "operator" is what runtime-control was called before.
+std::string roleName(const std::string& role)
+{
+    return role == "runtime-control" || role == "operator" ? "runtime-control" : "peer";
+}
+
 } // namespace
 
 PairingInitiator::PairingInitiator(PairingParty self, std::optional<std::string> inviteSecret,
                                    std::string requestedRole)
     : self_(std::move(self))
     , invite_(std::move(inviteSecret))
-    , role_(requestedRole == "operator" ? "operator" : "peer")
+    , role_(roleName(requestedRole))
     , nonce_(randomBytes(kPairingNonceSize))
 {
 }
@@ -89,11 +95,11 @@ std::optional<PairingOutcome> PairingInitiator::onResult(const nlohmann::json& b
     const auto announceKey = bytesField(body, "announce_key", 32);
     const auto granted = textField(body, "role");
     if (!runtimeId || !isUuid(*runtimeId) || !displayName || !isValidDisplayName(*displayName)
-        || !announceKey || !granted || (*granted != "peer" && *granted != "operator")) {
+        || !announceKey || !granted || (*granted != "peer" && roleName(*granted) != "runtime-control")) {
         setError(error, "malformed pair.result");
         return std::nullopt;
     }
-    return PairingOutcome{*runtimeId, *displayName, peerRootSpki_, *announceKey, *granted};
+    return PairingOutcome{*runtimeId, *displayName, peerRootSpki_, *announceKey, roleName(*granted)};
 }
 
 PairingResponder::PairingResponder(PairingParty self, RedeemInvite redeemInvite, bool pairingWindowOpen)
@@ -120,7 +126,7 @@ std::optional<nlohmann::json> PairingResponder::onHello(const nlohmann::json& bo
     const auto role = textField(body, "role");
     if (version == body.end() || *version != 1 || !runtimeId || !isUuid(*runtimeId)
         || *runtimeId == self_.runtimeId || !displayName || !isValidDisplayName(*displayName)
-        || !commitment || !role || (*role != "peer" && *role != "operator")) {
+        || !commitment || !role || (*role != "peer" && roleName(*role) != "runtime-control")) {
         setError(error, "malformed pair.hello");
         return std::nullopt;
     }
@@ -135,12 +141,13 @@ std::optional<nlohmann::json> PairingResponder::onHello(const nlohmann::json& bo
             return std::nullopt;
         }
         invite_ = true;
-        role_ = *granted == "operator" && *role == "operator" ? "operator" : "peer";
+        role_ = roleName(*granted) == "runtime-control" && roleName(*role) == "runtime-control"
+            ? "runtime-control" : "peer";
     } else if (!windowOpen_) {
         setError(error, "pairing is closed");
         return std::nullopt;
-    } else if (*role == "operator") {
-        setError(error, "only an operator invite grants the operator role");
+    } else if (roleName(*role) == "runtime-control") {
+        setError(error, "only a runtime-control invite grants Runtime Control");
         return std::nullopt;
     }
     peerRuntimeId_ = *runtimeId;

@@ -171,10 +171,11 @@ std::optional<PeeringConfig> parsePeeringConfig(const json& value, std::string* 
 {
     PeeringConfig config;
     if (value.is_null()) return config;
-    if (!onlyKeys(value, {"name", "shell", "control", "exports", "operator", "announce", "browse", "imports"},
+    if (!onlyKeys(value, {"name", "shell", "control", "exports", "runtime_control", "announce", "browse",
+                          "imports"},
                   "peering", error)
         || !readString(value, "name", config.name, error) || !readString(value, "shell", config.shell, error)
-        || !readBool(value, "operator", config.operatorRoutes, error)
+        || !readBool(value, "runtime_control", config.runtimeControl, error)
         || !readBool(value, "announce", config.announce, error)
         || !readBool(value, "browse", config.browse, error))
         return std::nullopt;
@@ -196,9 +197,9 @@ std::optional<PeeringConfig> parsePeeringConfig(const json& value, std::string* 
         if (const auto local = it->find("local_invite"); local != it->end()) {
             if (local->is_boolean()) {
                 config.localInvite = local->get<bool>();
-            } else if (!onlyKeys(*local, {"path", "role", "allow"}, "control.local_invite", error)
+            } else if (!onlyKeys(*local, {"path", "runtime_control", "allow"}, "control.local_invite", error)
                        || !readString(*local, "path", config.localInvitePath, error)
-                       || !readString(*local, "role", config.localInviteRole, error)) {
+                       || !readBool(*local, "runtime_control", config.localInviteRuntimeControl, error)) {
                 return std::nullopt;
             } else {
                 config.localInvite = true;
@@ -215,10 +216,6 @@ std::optional<PeeringConfig> parsePeeringConfig(const json& value, std::string* 
                         config.localInviteAllow.push_back(target.get<std::string>());
                     }
                 }
-            }
-            if (config.localInviteRole != "peer" && config.localInviteRole != "operator") {
-                fail(error, "control.local_invite.role is peer or operator");
-                return std::nullopt;
             }
         }
         if (!isHost(config.controlHost) || (!config.advertise.empty() && !isHost(config.advertise))) {

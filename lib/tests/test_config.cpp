@@ -16,7 +16,7 @@ json example()
             {"control", {{"enabled", true}, {"host", "0.0.0.0"}, {"port", 7443}}},
             {"exports", {{"enabled", true}, {"ports", "7450-7499"},
                          {"modules", {{"monerod_module", {{"events", true}}}}}}},
-            {"operator", false},
+            {"runtime_control", false},
             {"announce", true},
             {"browse", true},
             {"imports", {{"wallet_backend", {{"from", kRuntime}, {"allowed_callers", {"wallet_ui"}}}}}}};
@@ -144,13 +144,15 @@ TEST(Config, ALocalInviteIsOnOrDescribed)
     auto config = parsePeeringConfig(doc);
     ASSERT_TRUE(config);
     EXPECT_TRUE(config->localInvite);
-    EXPECT_EQ(config->localInviteRole, "peer");
-    doc["control"]["local_invite"] = {{"path", "/tmp/x/local-invite"}, {"role", "operator"}};
+    EXPECT_FALSE(config->localInviteRuntimeControl);
+    doc["control"]["local_invite"] = {{"path", "/tmp/x/local-invite"}, {"runtime_control", true}};
     config = parsePeeringConfig(doc);
     ASSERT_TRUE(config);
     EXPECT_EQ(config->localInvitePath, "/tmp/x/local-invite");
-    EXPECT_EQ(config->localInviteRole, "operator");
-    doc["control"]["local_invite"] = {{"role", "admin"}};
+    EXPECT_TRUE(config->localInviteRuntimeControl);
+    doc["control"]["local_invite"] = {{"runtime_control", "yes"}};
+    EXPECT_FALSE(parsePeeringConfig(doc));
+    doc["control"]["local_invite"] = {{"role", "operator"}};
     EXPECT_FALSE(parsePeeringConfig(doc));
     doc["control"]["local_invite"] = {{"ttl", 5}};
     EXPECT_FALSE(parsePeeringConfig(doc));

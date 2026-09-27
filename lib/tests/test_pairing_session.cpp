@@ -88,34 +88,34 @@ TEST(PairingSession, PeerInviteSkipsCodesAndApproval)
     EXPECT_EQ(uses, 1);
 }
 
-TEST(PairingSession, OperatorRoleNeedsAnOperatorInviteAndApproval)
+TEST(PairingSession, RuntimeControlNeedsItsInviteAndApproval)
 {
     Exchange x;
     {
-        PairingInitiator a(x.a, std::nullopt, "operator");
+        PairingInitiator a(x.a, std::nullopt, "runtime-control");
         PairingResponder b(x.b, {}, true);
         b.setTransport(x.a.rootSpki, x.exporter);
         EXPECT_FALSE(b.onHello(a.hello()).has_value());
     }
-    PairingInitiator a(x.a, std::string("secret"), "operator");
-    PairingResponder b(x.b, inviteGranting("operator", nullptr), false);
+    PairingInitiator a(x.a, std::string("secret"), "runtime-control");
+    PairingResponder b(x.b, inviteGranting("runtime-control", nullptr), false);
     a.setTransport(x.b.rootSpki, x.exporter);
     b.setTransport(x.a.rootSpki, x.exporter);
     ASSERT_TRUE(b.onReveal(*a.onNonce(*b.onHello(a.hello()))));
     ASSERT_TRUE(b.onConfirm(a.confirm()));
-    EXPECT_EQ(b.grantedRole(), "operator");
+    EXPECT_EQ(b.grantedRole(), "runtime-control");
     EXPECT_TRUE(b.needsApproval());
     EXPECT_FALSE(b.ready());
     b.approve();
     const auto outcome = a.onResult(b.result());
     ASSERT_TRUE(outcome.has_value());
-    EXPECT_EQ(outcome->role, "operator");
+    EXPECT_EQ(outcome->role, "runtime-control");
 }
 
-TEST(PairingSession, APeerInviteNeverGrantsOperator)
+TEST(PairingSession, APeerInviteNeverGrantsRuntimeControl)
 {
     Exchange x;
-    PairingInitiator a(x.a, std::string("secret"), "operator");
+    PairingInitiator a(x.a, std::string("secret"), "runtime-control");
     PairingResponder b(x.b, inviteGranting("peer", nullptr), false);
     b.setTransport(x.a.rootSpki, x.exporter);
     ASSERT_TRUE(b.onHello(a.hello()).has_value());

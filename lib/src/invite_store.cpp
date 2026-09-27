@@ -41,7 +41,8 @@ bool InviteStore::load(std::string* error)
             continue;
         IssuedInvite invite;
         invite.secretDigest = item["digest"].get<std::string>();
-        invite.role = item["role"].get<std::string>();
+        // "operator" was runtime-control's name before.
+        invite.role = item["role"].get<std::string>() == "peer" ? "peer" : "runtime-control";
         invite.expires = SysClock::time_point(std::chrono::seconds(item["expires"].get<std::int64_t>()));
         invite.issuedBy = item.value("issued_by", "");
         invites_.push_back(invite);
@@ -53,13 +54,14 @@ bool InviteStore::load(std::string* error)
 std::string InviteStore::issue(const std::string& role, std::chrono::seconds ttl,
                                const std::string& issuedBy)
 {
+    const bool control = role == "runtime-control";
     const std::chrono::seconds cap =
-        role == "operator" ? std::chrono::seconds(kOperatorTtl) : std::chrono::seconds(kPeerTtl);
+        control ? std::chrono::seconds(kRuntimeControlTtl) : std::chrono::seconds(kPeerTtl);
     const std::chrono::seconds effective = ttl.count() <= 0 ? cap : std::min(ttl, cap);
     const std::string secret = newInviteSecret();
     std::lock_guard<std::mutex> lock(mutex_);
     purgeLocked();
-    invites_.push_back({inviteSecretDigest(secret), role == "operator" ? "operator" : "peer",
+    invites_.push_back({inviteSecretDigest(secret), control ? "runtime-control" : "peer",
                         now_() + effective, issuedBy});
     saveLocked();
     return secret;

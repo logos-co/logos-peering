@@ -12,6 +12,12 @@
 
 namespace logos::peering {
 
+inline constexpr const char* kProviderAccess = "provider-access";
+inline constexpr const char* kRuntimeControl = "runtime-control";
+
+// What a pairing's role ("peer" or "runtime-control") lets the peer use.
+std::vector<std::string> usesForRole(const std::string& role);
+
 struct Enrollment {
     std::string runtimeInstanceId;
     std::string profile = "logos.remote.tls-tcp";
@@ -20,13 +26,17 @@ struct Enrollment {
     std::string trustAnchorPem;                 // the peer's root certificate
     std::vector<std::string> subjectPublicKeys; // pins of its control keys (1 or 2)
     std::string alias;                          // local label
-    std::string role = "peer";                  // what the peer may do here: peer | operator
-    std::string grantedRole = "peer";           // what this runtime may do there
+    // The spec's enrollment uses: "provider-access", plus "runtime-control" when the
+    // peer may open Runtime Control sessions here (uses) or this runtime there.
+    std::vector<std::string> uses = {kProviderAccess};
+    std::vector<std::string> grantedUses = {kProviderAccess};
     std::string displayName;                    // what the peer called itself
     std::vector<std::string> addresses;         // where its control endpoint was reached
     std::uint16_t controlPort = 0;              // 0: it serves none we know of
 
     std::string anchorPin() const;
+    bool runtimeControl() const;
+    bool grantedRuntimeControl() const;
     nlohmann::json toJson() const;
     static std::optional<Enrollment> fromJson(const nlohmann::json& value,
                                               std::string* error = nullptr);

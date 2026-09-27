@@ -40,11 +40,11 @@ TEST(InviteStore, SingleUseAndPersistedAsDigestsOnly)
     fs::remove(file);
 }
 
-TEST(InviteStore, OperatorInvitesLiveAtMostFifteenMinutes)
+TEST(InviteStore, RuntimeControlInvitesLiveAtMostFifteenMinutes)
 {
     FakeClock clock;
     InviteStore store({}, clock.fn());
-    const std::string secret = store.issue("operator", 24h, "@op:alice");
+    const std::string secret = store.issue("runtime-control", 24h, "@op:alice");
     clock.now += 16min;
     EXPECT_FALSE(store.redeem(secret).has_value());
     EXPECT_FALSE(store.anyLive());

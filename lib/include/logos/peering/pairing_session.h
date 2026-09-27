@@ -9,8 +9,8 @@
 //   A -> B  pair.confirm {announce_key}        once A's user accepts the code
 //   B -> A  pair.result  {status, runtime_id, display_name, announce_key?}
 //
-// A peer invite needs no code comparison on either side. An operator invite
-// still needs B's approval, which shows the redeemer's display ID.
+// A peer invite needs no code comparison on either side. A runtime-control
+// invite still needs B's approval, which shows the redeemer's display ID.
 
 #include "logos/peering/crypto.h"
 
@@ -34,7 +34,7 @@ struct PairingOutcome {
     std::string peerDisplayName;
     Bytes peerRootSpki;
     Bytes peerAnnounceKey;
-    std::string role; // what the initiator was granted: peer | operator
+    std::string role; // what the initiator was granted: peer | runtime-control
 };
 
 class PairingInitiator {
@@ -75,7 +75,7 @@ public:
     void approve() { approved_ = true; }
     void reject() { rejected_ = true; }
 
-    bool needsApproval() const { return !invite_ || role_ == "operator"; }
+    bool needsApproval() const { return !invite_ || role_ == "runtime-control"; }
     bool rejected() const { return rejected_; }
     bool revealed() const { return revealed_; }
     bool confirmed() const { return confirmed_; }

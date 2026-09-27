@@ -19,7 +19,7 @@ namespace logos::peering {
 
 struct IssuedInvite {
     std::string secretDigest;
-    std::string role; // peer | operator
+    std::string role; // peer | runtime-control
     std::chrono::system_clock::time_point expires;
     std::string issuedBy;
 };
@@ -29,7 +29,7 @@ public:
     using Now = std::function<std::chrono::system_clock::time_point()>;
 
     static constexpr std::chrono::hours kPeerTtl{24};
-    static constexpr std::chrono::minutes kOperatorTtl{15};
+    static constexpr std::chrono::minutes kRuntimeControlTtl{15};
 
     explicit InviteStore(std::filesystem::path file = {}, Now now = {});
 

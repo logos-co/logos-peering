@@ -66,9 +66,4 @@ nlohmann::json remotePrincipal(const std::string& peerRuntimeId, const std::stri
     return {{"kind", "remote"}, {"peer", peerRuntimeId}, {"name", consumer}};
 }
 
-nlohmann::json remoteOperatorPrincipal(const std::string& peerRuntimeId)
-{
-    return {{"kind", "operator"}, {"name", "@peer:" + peerRuntimeId}};
-}
-
 } // namespace logos::peering

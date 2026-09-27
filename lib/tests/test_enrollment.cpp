@@ -40,12 +40,30 @@ TEST(Enrollment, JsonRoundTripAndValidation)
     broken = e.toJson();
     broken["runtime_instance_id"] = "nope";
     EXPECT_FALSE(Enrollment::fromJson(broken).has_value());
-    broken = e.toJson();
-    broken["role"] = "root";
-    EXPECT_FALSE(Enrollment::fromJson(broken).has_value());
+    for (const auto& uses : {nlohmann::json::array(), nlohmann::json{"root"}, nlohmann::json{"runtime-control"},
+                             nlohmann::json{"provider-access", "provider-access"}}) {
+        broken = e.toJson();
+        broken["uses"] = uses;
+        EXPECT_FALSE(Enrollment::fromJson(broken).has_value()) << uses.dump();
+    }
     broken = e.toJson();
     broken["trust_anchor"] = "garbage";
     EXPECT_FALSE(Enrollment::fromJson(broken).has_value());
+}
+
+TEST(Enrollment, AnOperatorRoleLoadsAsRuntimeControl)
+{
+    auto doc = makePeer("office").toJson();
+    doc.erase("uses");
+    doc.erase("granted_uses");
+    doc["role"] = "operator";
+    doc["granted_role"] = "peer";
+    const auto e = Enrollment::fromJson(doc);
+    ASSERT_TRUE(e.has_value());
+    EXPECT_TRUE(e->runtimeControl());
+    EXPECT_FALSE(e->grantedRuntimeControl());
+    EXPECT_EQ(e->toJson()["uses"], nlohmann::json({"provider-access", "runtime-control"}));
+    EXPECT_FALSE(e->toJson().contains("role"));
 }
 
 TEST(Enrollment, StoreRefusesCollisions)
