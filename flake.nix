@@ -28,18 +28,9 @@
         logos-protocol.packages.${pkgs.stdenv.hostPlatform.system}.logos-protocol-plain
       ];
 
-      libpeering = forAllSystems ({ pkgs, ... }: pkgs.stdenv.mkDerivation {
-        pname = "logos-libpeering";
-        version = "0.1.0";
-        src = lib.cleanSourceWith {
-          src = ./.;
-          filter = path: type: !(lib.hasPrefix (toString ./modules) (toString path));
-        };
-        nativeBuildInputs = [ pkgs.cmake pkgs.ninja pkgs.pkg-config ];
-        buildInputs = libDeps pkgs ++ [ pkgs.gtest ];
-        propagatedBuildInputs = libDeps pkgs;
-        cmakeFlags = [ "-DLOGOS_PEERING_BUILD_TESTS=ON" ];
-        doCheck = true;
+      libpeering = forAllSystems ({ pkgs, system }: import ./nix/libpeering.nix {
+        inherit pkgs;
+        logosProtocol = logos-protocol.packages.${system}.logos-protocol-plain;
       });
 
       hostRemote = forAllSystems ({ pkgs, system }: pkgs.stdenv.mkDerivation {
