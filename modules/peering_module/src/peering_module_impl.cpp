@@ -227,21 +227,25 @@ LogosMap PeeringModuleImpl::pairWith(const std::string& host, int64_t port)
 {
     return forward("pairWith", LogosList::array({host, port}));
 }
-LogosMap PeeringModuleImpl::confirmPairing(const std::string& id)
+LogosMap PeeringModuleImpl::confirmPairing(const std::string& id,
+                                           const std::optional<std::vector<std::string>>& allow)
 {
-    return forward("confirmPairing", LogosList::array({id}));
+    return forward("confirmPairing", LogosList::array({id, allow ? LogosList(*allow) : LogosList()}));
 }
 LogosMap PeeringModuleImpl::rejectPairing(const std::string& id)
 {
     return forward("rejectPairing", LogosList::array({id}));
 }
-LogosMap PeeringModuleImpl::createInvite(const std::string& role, int64_t ttlSeconds)
+LogosMap PeeringModuleImpl::createInvite(const std::string& role, int64_t ttlSeconds,
+                                         const std::optional<std::vector<std::string>>& allow)
 {
-    return forward("createInvite", LogosList::array({role, ttlSeconds}));
+    return forward("createInvite",
+                   LogosList::array({role, ttlSeconds, allow ? LogosList(*allow) : LogosList()}));
 }
-LogosMap PeeringModuleImpl::redeemInvite(const std::string& invite)
+LogosMap PeeringModuleImpl::redeemInvite(const std::string& invite,
+                                         const std::optional<std::vector<std::string>>& allow)
 {
-    return forward("redeemInvite", LogosList::array({invite}));
+    return forward("redeemInvite", LogosList::array({invite, allow ? LogosList(*allow) : LogosList()}));
 }
 LogosMap PeeringModuleImpl::removePeer(const std::string& peer)
 {

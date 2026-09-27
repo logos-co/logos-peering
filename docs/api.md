@@ -90,9 +90,9 @@ Events hosts follow: `anchorsChanged()`, `routesRevoked(peer, generation)`,
 | `peerExports(peer)` | no, but asks the peer, so only managers call it — `{peer, exports: {module: {events, loaded}}}`, what the peer's policy lets this runtime reach |
 | `openPairingWindow(seconds)` | yes — at most 900; 0 closes it |
 | `pairWith(host, port)` | yes — `{id, code, peer_display_id, state}`; confirm with `confirmPairing(id)` once the codes match |
-| `confirmPairing(id)` / `rejectPairing(id)` | yes — for either direction |
-| `createInvite(role, ttlSeconds)` | yes — `{invite}`; `role` is `peer` (≤ 24 h) or `runtime-control` (≤ 15 min, needs `runtime_control`) |
-| `redeemInvite(invite)` | yes |
+| `confirmPairing(id, allow?)` / `rejectPairing(id)` | yes — for either direction; `allow` grants the other runtime `"<uuid>/*"` → `allow` here once paired |
+| `createInvite(role, ttlSeconds, allow?)` | yes — `{invite}`; `role` is `peer` (≤ 24 h) or `runtime-control` (≤ 15 min, needs `runtime_control`); the runtime that redeems it gets `"<uuid>/*"` → `allow` here |
+| `redeemInvite(invite, allow?)` | yes — `allow` grants the inviting runtime the same way here |
 | `removePeer(peer)` / `renamePeer(peer, alias)` | yes — `peer` is a runtime id or an alias |
 | `setExport(module, config)` / `removeExport(module)` | yes |
 | `setImport(name, config)` / `removeImport(name)` | yes |
@@ -194,7 +194,9 @@ same-user app on this machine in a 0600 file (default `<state>/local-invite`; th
 `127.0.0.1`. It is redeemable over loopback only, and a new one replaces it once used or
 expired (with `runtime_control`, which needs the top-level switch, 15 minutes at a time). `allow`
 (module names, or `"*"` for every export) becomes the policy entry `"<uuid>/*"` of each
-runtime that pairs through it; without it, pairing grants nothing, as elsewhere.
+runtime that pairs through it, as the `allow` of `createInvite` and `confirmPairing` does;
+without one, pairing grants nothing. An `allow` never names `core_service`: it grants
+provider access, for either role.
 
 An import's `allowed_callers` may hold `"*"`: any local consumer may use it.
 

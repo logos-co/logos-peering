@@ -94,6 +94,13 @@ if(LOGOS_MODULE_LOADER_QT_ROOT)
         logos_peering
         ${LOGOS_MODULE_LOADER_QT_ROOT}/lib/liblogos_host_process.a
         logos-protocol::logos_protocol_plain)
+    # Its libraries sit in ../lib, as logos_host_plain's do. Android's APK
+    # packaging rewrites this RUNPATH to $ORIGIN; an empty one cannot be.
+    if(NOT APPLE AND NOT WIN32)
+        set_target_properties(logos_host_remote PROPERTIES
+            INSTALL_RPATH "$ORIGIN/../lib"
+            BUILD_WITH_INSTALL_RPATH TRUE)
+    endif()
     install(TARGETS logos_host_remote RUNTIME DESTINATION bin)
 endif()
 

@@ -45,6 +45,9 @@ bool InviteStore::load(std::string* error)
         invite.role = item["role"].get<std::string>() == "peer" ? "peer" : "runtime-control";
         invite.expires = SysClock::time_point(std::chrono::seconds(item["expires"].get<std::int64_t>()));
         invite.issuedBy = item.value("issued_by", "");
+        if (item.contains("allow") && item["allow"].is_array())
+            for (const auto& target : item["allow"])
+                if (target.is_string()) invite.allow.push_back(target.get<std::string>());
         invites_.push_back(invite);
     }
     purgeLocked();
@@ -52,7 +55,7 @@ bool InviteStore::load(std::string* error)
 }
 
 std::string InviteStore::issue(const std::string& role, std::chrono::seconds ttl,
-                               const std::string& issuedBy)
+                               const std::string& issuedBy, std::vector<std::string> allow)
 {
     const bool control = role == "runtime-control";
     const std::chrono::seconds cap =
@@ -62,7 +65,7 @@ std::string InviteStore::issue(const std::string& role, std::chrono::seconds ttl
     std::lock_guard<std::mutex> lock(mutex_);
     purgeLocked();
     invites_.push_back({inviteSecretDigest(secret), control ? "runtime-control" : "peer",
-                        now_() + effective, issuedBy});
+                        now_() + effective, issuedBy, std::move(allow)});
     saveLocked();
     return secret;
 }
@@ -127,11 +130,14 @@ void InviteStore::saveLocked()
 {
     if (file_.empty()) return;
     nlohmann::json list = nlohmann::json::array();
-    for (const auto& i : invites_)
-        list.push_back({{"digest", i.secretDigest},
-                        {"role", i.role},
-                        {"expires", toSeconds(i.expires)},
-                        {"issued_by", i.issuedBy}});
+    for (const auto& i : invites_) {
+        nlohmann::json entry = {{"digest", i.secretDigest},
+                                {"role", i.role},
+                                {"expires", toSeconds(i.expires)},
+                                {"issued_by", i.issuedBy}};
+        if (!i.allow.empty()) entry["allow"] = i.allow;
+        list.push_back(entry);
+    }
     writeFileAtomically(file_, nlohmann::json{{"version", 1}, {"invites", list}}.dump(2) + "\n");
 }
 

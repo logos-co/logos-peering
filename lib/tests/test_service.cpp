@@ -496,6 +496,51 @@ TEST(PeeringService, ACodePairingWaitsForBothSides)
     ASSERT_TRUE(waitFor([&] { return a.manage("peers")["peers"].size() == 1 && b.manage("peers")["peers"].size() == 1; }));
 }
 
+TEST(PeeringService, ACodePairingGrantsWhatEachApprovalAllows)
+{
+    Runtime a("laptop");
+    Runtime b("office");
+    a.configure();
+    b.configure();
+    ASSERT_FALSE(b.manage("openPairingWindow", json::array({60})).contains("error"));
+    const json started = a.manage("pairWith", json::array({"127.0.0.1", b.port()}));
+    ASSERT_TRUE(started.contains("id")) << started.dump();
+    json incoming;
+    ASSERT_TRUE(waitFor([&] {
+        incoming = b.manage("pending")["pending"];
+        return incoming.size() == 1;
+    }));
+    ASSERT_TRUE(a.manage("confirmPairing", json::array({started["id"], json::array({"*"})})).value("ok", false));
+    ASSERT_TRUE(b.manage("confirmPairing", json::array({incoming[0]["id"], json::array({"echo_module"})}))
+                    .value("ok", false));
+    ASSERT_TRUE(waitFor([&] { return a.manage("peers")["peers"].size() == 1 && b.manage("peers")["peers"].size() == 1; }));
+    // Each side grants the other access to its own exports, and only what it named.
+    EXPECT_EQ(b.engine("remotePolicy"), json({{a.id() + "/*", json::array({"echo_module"})}}));
+    EXPECT_TRUE(waitFor([&] { return a.engine("remotePolicy") == json({{b.id() + "/*", json::array({"*"})}}); }));
+    EXPECT_TRUE(b.sawEvent("remotePolicyChanged"));
+}
+
+TEST(PeeringService, AnApprovalWithoutAllowGrantsNothing)
+{
+    Runtime a("laptop");
+    Runtime b("office");
+    a.configure();
+    b.configure();
+    b.manage("openPairingWindow", json::array({60}));
+    const json started = a.manage("pairWith", json::array({"127.0.0.1", b.port()}));
+    ASSERT_TRUE(started.contains("id")) << started.dump();
+    json incoming;
+    ASSERT_TRUE(waitFor([&] {
+        incoming = b.manage("pending")["pending"];
+        return incoming.size() == 1;
+    }));
+    a.manage("confirmPairing", json::array({started["id"]}));
+    b.manage("confirmPairing", json::array({incoming[0]["id"], nullptr}));
+    ASSERT_TRUE(waitFor([&] { return a.manage("peers")["peers"].size() == 1 && b.manage("peers")["peers"].size() == 1; }));
+    EXPECT_EQ(b.engine("remotePolicy"), json::object());
+    EXPECT_EQ(a.engine("remotePolicy"), json::object());
+}
+
 TEST(PeeringService, ARejectedPairingEnrollsNobody)
 {
     Runtime a("laptop");
@@ -968,6 +1013,65 @@ TEST(PeeringService, ALocalInviteGrantsWhatItAllows)
     importEcho(a, b, {"*"});
     Dialer facade(a, "echo");
     EXPECT_TRUE(facade.requestRoute("any_ui").contains("ticket"));
+}
+
+TEST(PeeringService, AnInviteGrantsWhatItAllows)
+{
+    Runtime a("laptop");
+    Runtime b("office");
+    a.configure();
+    b.configure();
+    const json invite = b.manage("createInvite", json::array({"peer", 3600, json::array({"echo_module"})}));
+    ASSERT_TRUE(invite.contains("invite")) << invite.dump();
+    ASSERT_FALSE(a.manage("redeemInvite", json::array({invite["invite"]})).contains("error"));
+    ASSERT_TRUE(waitFor([&] { return a.manage("peers")["peers"].size() == 1 && b.manage("peers")["peers"].size() == 1; }));
+    EXPECT_EQ(b.engine("remotePolicy"), json({{a.id() + "/*", json::array({"echo_module"})}}));
+    // Redeeming grants nothing on the redeemer's side unless it says so.
+    EXPECT_EQ(a.engine("remotePolicy"), json::object());
+
+    ASSERT_TRUE(b.manage("setExport", json::array({"echo_module", json::object()})).value("ok", false));
+    ASSERT_TRUE(b.engine("exportLoaded", json::array({"echo_module", 1})).value("ok", false));
+    ExportHost host(b, "echo_module");
+    importEcho(a, b, {"*"});
+    Dialer facade(a, "echo");
+    EXPECT_TRUE(facade.requestRoute("any_ui").contains("ticket"));
+}
+
+TEST(PeeringService, AllowListsNameOnlyWhatARuntimeMayShare)
+{
+    Runtime b("office");
+    b.configure();
+    // core_service too: an invite grants provider access, never Runtime Control methods.
+    for (const json& bad : {json::array({"capability_module"}), json::array({"peering_module"}),
+                            json::array({"core_service"}), json::array({"logos_anything"}),
+                            json::array({42}), json("echo_module")})
+        EXPECT_EQ(b.manage("createInvite", json::array({"peer", 60, bad})).value("error", ""), "INVALID_ARGUMENT")
+            << bad.dump();
+    EXPECT_TRUE(b.manage("createInvite", json::array({"peer", 60, nullptr})).contains("invite"));
+    EXPECT_EQ(b.manage("confirmPairing", json::array({"nope", json::array({"peering_identity"})}))
+                  .value("error", ""), "INVALID_ARGUMENT");
+}
+
+TEST(PeeringService, ARuntimeControlInviteMayAllowProviderAccessToo)
+{
+    Runtime b("office");
+    b.configure({{"runtime_control", true}});
+    EXPECT_TRUE(b.manage("createInvite", json::array({"runtime-control", 60, json::array({"echo_module"})}))
+                    .contains("invite"));
+}
+
+TEST(PeeringService, ALocalInviteIsReissuedWhenItsAllowListChanges)
+{
+    Runtime b("daemon");
+    const fs::path path = b.dir / "local-invite";
+    json config = localInviteConfig(path);
+    config["control"]["local_invite"]["allow"] = {"echo_module"};
+    b.configure(config);
+    ASSERT_TRUE(waitFor([&] { return fs::exists(path); }));
+    const std::string first = readText(path);
+    config["control"]["local_invite"]["allow"] = {"*"};
+    b.configure(config);
+    ASSERT_TRUE(waitFor([&] { return readText(path) != first && !readText(path).empty(); }));
 }
 
 TEST(PeeringService, PeerExportsIsForManagersOfEnrolledPeers)

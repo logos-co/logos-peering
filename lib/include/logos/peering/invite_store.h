@@ -22,6 +22,8 @@ struct IssuedInvite {
     std::string role; // peer | runtime-control
     std::chrono::system_clock::time_point expires;
     std::string issuedBy;
+    // Policy targets the redeeming runtime is granted, as `<uuid>/*`.
+    std::vector<std::string> allow;
 };
 
 class InviteStore {
@@ -36,7 +38,8 @@ public:
     bool load(std::string* error = nullptr);
 
     // Returns the secret; it is not stored. `ttl` is capped by the role's maximum.
-    std::string issue(const std::string& role, std::chrono::seconds ttl, const std::string& issuedBy);
+    std::string issue(const std::string& role, std::chrono::seconds ttl, const std::string& issuedBy,
+                      std::vector<std::string> allow = {});
 
     // Consumes a live invite whose secret matches and that `accept` (if
     // given) approves, returning what it granted.

@@ -6,7 +6,9 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include <logos_json.h>
 #include <logos_module_context.h>
@@ -50,10 +52,12 @@ public:
     LogosMap peerExports(const std::string& peer);
     LogosMap openPairingWindow(int64_t seconds);
     LogosMap pairWith(const std::string& host, int64_t port);
-    LogosMap confirmPairing(const std::string& id);
+    // `allow`: policy targets the paired runtime may call here, as `<uuid>/*`.
+    LogosMap confirmPairing(const std::string& id, const std::optional<std::vector<std::string>>& allow);
     LogosMap rejectPairing(const std::string& id);
-    LogosMap createInvite(const std::string& role, int64_t ttlSeconds);
-    LogosMap redeemInvite(const std::string& invite);
+    LogosMap createInvite(const std::string& role, int64_t ttlSeconds,
+                          const std::optional<std::vector<std::string>>& allow);
+    LogosMap redeemInvite(const std::string& invite, const std::optional<std::vector<std::string>>& allow);
     LogosMap removePeer(const std::string& peer);
     LogosMap renamePeer(const std::string& peer, const std::string& alias);
     LogosMap setExport(const std::string& module, const LogosMap& config);

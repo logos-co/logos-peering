@@ -90,6 +90,20 @@ std::optional<std::int64_t> intArg(const json& args, std::size_t index)
     return args[index].get<std::int64_t>();
 }
 
+// An optional list of policy targets; absent or null grants nothing.
+bool allowArg(const json& args, std::size_t index, std::vector<std::string>& out)
+{
+    out.clear();
+    if (!args.is_array() || args.size() <= index || args[index].is_null()) return true;
+    if (!args[index].is_array()) return false;
+    for (const auto& target : args[index]) {
+        if (!target.is_string() || !isPolicyTarget(target.get<std::string>())) return false;
+        if (std::find(out.begin(), out.end(), target.get<std::string>()) == out.end())
+            out.push_back(target.get<std::string>());
+    }
+    return true;
+}
+
 const json* objectArg(const json& args, std::size_t index)
 {
     if (!args.is_array() || args.size() <= index || !args[index].is_object()) return nullptr;
@@ -240,6 +254,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         std::uint16_t port = 0;
         std::string expectedRootDigest; // from an invite
         bool invite = false;
+        std::vector<std::string> grant; // this side's policy for the peer, once paired
         bool transportSeen = false;
         std::string peerRootPem;
         std::string peerLeafPin;
@@ -260,7 +275,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         std::string displayId;
         std::string address;
         std::uint16_t controlPort = 0;
-        std::shared_ptr<bool> viaLocalInvite = std::make_shared<bool>(false);
+        std::shared_ptr<std::vector<std::string>> grant = std::make_shared<std::vector<std::string>>();
         bool finished = false;
         json result;
         SteadyClock::time_point expires;
@@ -487,14 +502,16 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         }
         bool live = false;
         for (const auto& invite : invites.live())
-            if (!digest.empty() && invite.secretDigest == digest) live = true;
+            if (!digest.empty() && invite.secretDigest == digest && invite.allow == cfg.localInviteAllow)
+                live = true;
         if (live && std::filesystem::exists(path, ignored)) return;
         const std::uint16_t port = boundControlPort();
         const auto s = self();
         if (!port || !s) return;
         if (!digest.empty()) invites.revoke(digest);
         const std::string role = cfg.localInviteRuntimeControl && cfg.runtimeControl ? "runtime-control" : "peer";
-        const std::string secret = invites.issue(role, std::chrono::seconds(0), kLocalIssuer);
+        const std::string secret =
+            invites.issue(role, std::chrono::seconds(0), kLocalIssuer, cfg.localInviteAllow);
         Invite invite;
         invite.runtimeId = s->runtimeId;
         invite.rootDigest = base64url(sha256(s->rootSpki));
@@ -720,13 +737,13 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         const std::string sid = base64url(randomBytes(12));
         Incoming in;
         in.responder = std::make_unique<PairingResponder>(partyLocked(*s),
-            [this, loopback, local = in.viaLocalInvite](const std::string& secret) -> std::optional<std::string> {
+            [this, loopback, grant = in.grant](const std::string& secret) -> std::optional<std::string> {
                 // The local invite is for this machine only.
                 const auto invite = invites.redeem(secret, [loopback](const IssuedInvite& i) {
                     return loopback || i.issuedBy != kLocalIssuer;
                 });
                 if (!invite) return std::nullopt;
-                *local = invite->issuedBy == kLocalIssuer;
+                *grant = invite->allow;
                 audit.record("invite_redeemed", {{"role", invite->role}, {"issued_by", invite->issuedBy}});
                 wake.notify_all();
                 return invite->role;
@@ -864,12 +881,11 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
                 }
                 audit.record("paired", {{"peer", e.runtimeInstanceId}, {"uses", e.uses},
                                         {"direction", "incoming"}});
-                // What the local invite allows, the runtime it paired gets.
-                if (*in.viaLocalInvite && !config.localInviteAllow.empty()) {
-                    policy[e.runtimeInstanceId + "/*"] = config.localInviteAllow;
+                // What the invite or the approval allows, the runtime it paired gets.
+                if (!in.grant->empty()) {
+                    policy[e.runtimeInstanceId + "/*"] = *in.grant;
                     saveLocalLocked();
-                    audit.record("policy_granted", {{"peer", e.runtimeInstanceId},
-                                                    {"targets", config.localInviteAllow}});
+                    audit.record("policy_granted", {{"peer", e.runtimeInstanceId}, {"targets", *in.grant}});
                     policyGranted = true;
                 }
                 in.result = in.responder->result();
@@ -1207,10 +1223,22 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
     {
         if (method == "openPairingWindow") return openPairingWindow(intArg(args, 0));
         if (method == "pairWith") return pairWith(textArg(args, 0), intArg(args, 1));
-        if (method == "confirmPairing") return decidePairing(textArg(args, 0), true);
-        if (method == "rejectPairing") return decidePairing(textArg(args, 0), false);
-        if (method == "createInvite") return createInvite(caller, textArg(args, 0), intArg(args, 1));
-        if (method == "redeemInvite") return redeemInvite(textArg(args, 0));
+        if (method == "confirmPairing") {
+            std::vector<std::string> allow;
+            if (!allowArg(args, 1, allow)) return fault("INVALID_ARGUMENT");
+            return decidePairing(textArg(args, 0), true, allow);
+        }
+        if (method == "rejectPairing") return decidePairing(textArg(args, 0), false, {});
+        if (method == "createInvite") {
+            std::vector<std::string> allow;
+            if (!allowArg(args, 2, allow)) return fault("INVALID_ARGUMENT");
+            return createInvite(caller, textArg(args, 0), intArg(args, 1), allow);
+        }
+        if (method == "redeemInvite") {
+            std::vector<std::string> allow;
+            if (!allowArg(args, 1, allow)) return fault("INVALID_ARGUMENT");
+            return redeemInvite(textArg(args, 0), allow);
+        }
         if (method == "removePeer") return removePeer(textArg(args, 0));
         if (method == "renamePeer") return renamePeer(textArg(args, 0), textArg(args, 1));
         if (method == "setExport") return setExport(textArg(args, 0), args.size() > 1 ? args[1] : json());
@@ -1780,7 +1808,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
     }
 
     json createInvite(const CallerRef& caller, const std::optional<std::string>& role,
-                      const std::optional<std::int64_t>& ttl)
+                      const std::optional<std::int64_t>& ttl, const std::vector<std::string>& allow)
     {
         if (!role || (*role != "peer" && *role != "runtime-control") || !ttl) return fault("INVALID_ARGUMENT");
         const auto s = self();
@@ -1798,7 +1826,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         }
         if (host.empty()) return fault("NO_ADDRESS: set control.advertise");
         const std::string issuer = caller.kind == CallerRef::Kind::Operator ? "@op:" + caller.name : caller.name;
-        const std::string secret = invites.issue(*role, std::chrono::seconds(*ttl), issuer);
+        const std::string secret = invites.issue(*role, std::chrono::seconds(*ttl), issuer, allow);
         Invite invite;
         invite.runtimeId = s->runtimeId;
         invite.rootDigest = base64url(sha256(s->rootSpki));
@@ -1806,13 +1834,13 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         invite.host = host;
         invite.port = port;
         refreshControl();
-        audit.record("invite_created", {{"role", *role}, {"issued_by", issuer}});
+        audit.record("invite_created", {{"role", *role}, {"issued_by", issuer}, {"allow", allow}});
         return json{{"invite", formatInvite(invite)}};
     }
 
     // Dials `host:port` unanchored and runs pair.hello and pair.reveal.
     json startOutgoing(const std::string& host, std::uint16_t port, const std::optional<Invite>& invite,
-                       const std::string& role)
+                       const std::string& role, std::vector<std::string> grant = {})
     {
         std::string error;
         if (!ensureControlCredential(error)) return fault("IDENTITY_UNAVAILABLE: " + error);
@@ -1824,6 +1852,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         o->port = port;
         o->invite = invite.has_value();
         o->confirmed = invite.has_value();
+        o->grant = std::move(grant);
         std::string chain;
         std::string key;
         {
@@ -1901,7 +1930,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         return startOutgoing(*host, static_cast<std::uint16_t>(*port), std::nullopt, "peer");
     }
 
-    json redeemInvite(const std::optional<std::string>& text)
+    json redeemInvite(const std::optional<std::string>& text, const std::vector<std::string>& allow)
     {
         if (!text) return fault("INVALID_ARGUMENT");
         std::string error;
@@ -1911,15 +1940,16 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
             std::lock_guard<std::mutex> lock(m);
             if (enrollments.find(invite->runtimeId)) return fault("ALREADY_PAIRED");
         }
-        return startOutgoing(invite->host, invite->port, invite, "runtime-control");
+        return startOutgoing(invite->host, invite->port, invite, "runtime-control", allow);
     }
 
-    json decidePairing(const std::optional<std::string>& id, bool accept)
+    json decidePairing(const std::optional<std::string>& id, bool accept, const std::vector<std::string>& allow)
     {
         if (!id) return fault("INVALID_ARGUMENT");
         {
             std::lock_guard<std::mutex> lock(m);
             if (const auto it = incoming.find(*id); it != incoming.end() && !it->second.finished) {
+                if (accept && !allow.empty()) *it->second.grant = allow;
                 if (accept) it->second.responder->approve();
                 else it->second.responder->reject();
                 audit.record(accept ? "pairing_approved" : "pairing_rejected",
@@ -1930,6 +1960,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
                 Outgoing& o = *it->second;
                 if (o.state != "code") return fault("NOT_PENDING");
                 if (accept) {
+                    if (!allow.empty()) o.grant = allow;
                     o.confirmed = true;
                     o.state = "confirming";
                 } else {
@@ -2158,6 +2189,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
         const json result = linkInvoke(o.client, "pairConfirm", json::array({o.initiator->confirm()}));
         std::string error;
         bool enrolled = false;
+        bool policyGranted = false;
         {
             std::lock_guard<std::mutex> lock(m);
             o.polling = false;
@@ -2183,6 +2215,12 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
                     enrolled = true;
                     audit.record("paired", {{"peer", e.runtimeInstanceId}, {"granted_uses", e.grantedUses},
                                             {"direction", "outgoing"}});
+                    if (!o.grant.empty()) {
+                        policy[e.runtimeInstanceId + "/*"] = o.grant;
+                        saveLocalLocked();
+                        audit.record("policy_granted", {{"peer", e.runtimeInstanceId}, {"targets", o.grant}});
+                        policyGranted = true;
+                    }
                 } else {
                     enrollments.load();
                     o.state = "failed";
@@ -2198,6 +2236,7 @@ struct PeeringService::Impl : std::enable_shared_from_this<PeeringService::Impl>
             refreshControl();
             emit("peersChanged");
             emit("anchorsChanged");
+            if (policyGranted) emit("remotePolicyChanged");
         }
     }
 

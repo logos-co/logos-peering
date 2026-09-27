@@ -1,15 +1,15 @@
 {
   description = "Logos peering: runtime identity, pairing and routes between Logos instances";
 
-  inputs.logos-nix.url = "github:logos-co/logos-nix";
+  inputs.logos-nix.url = "github:logos-co/logos-nix/feat/standalone-apps";
   inputs.nixpkgs.follows = "logos-nix/nixpkgs";
   # Builds the two bundled modules. Its logos-protocol (tls_tcp and the lp_*
   # C ABI) is the one libpeering compiles against too.
-  inputs.logos-module-builder.url = "github:logos-co/logos-module-builder/feat/peering";
+  inputs.logos-module-builder.url = "github:logos-co/logos-module-builder/feat/standalone-apps";
   inputs.logos-module-builder.inputs.logos-nix.follows = "logos-nix";
   inputs.logos-protocol.follows = "logos-module-builder/logos-protocol";
   # The host process library logos_host_remote is built on.
-  inputs.logos-module-loader-qt.url = "github:logos-co/logos-module-loader-qt/feat/peering";
+  inputs.logos-module-loader-qt.url = "github:logos-co/logos-module-loader-qt/feat/standalone-apps";
   inputs.logos-module-loader-qt.inputs.logos-nix.follows = "logos-nix";
   inputs.logos-module-loader-qt.inputs.logos-protocol.follows = "logos-module-builder/logos-protocol";
   inputs.logos-module-loader-qt.inputs.logos-cpp-sdk.follows = "logos-module-builder/logos-cpp-sdk";
@@ -23,16 +23,24 @@
         inherit system;
         pkgs = import nixpkgs { inherit system; };
       });
-      # Plus "x86_64-windows", cross-built with MinGW on x86_64-linux.
-      forAllTargets = logos-nix.lib.forAllTargets;
+      # logos-nix's targets (native, plus "x86_64-windows" cross-built with MinGW on
+      # x86_64-linux) and "aarch64-android" (its NDK set), for what a runtime there
+      # runs: libpeering, logos_host_remote and the two modules.
+      forAllTargets = f: logos-nix.lib.forAllTargets f // {
+        aarch64-android = f {
+          system = "aarch64-android";
+          pkgs = logos-nix.lib.mobileTargets.aarch64-android.pkgs;
+        };
+      };
 
       # What the Windows runner (logos-windows-ci `tests: true`) runs, one case per process.
       windowsTests = builtins.toFile "libpeering-tests.json" (builtins.toJSON {
         suites = [ { name = "libpeering"; exe = "bin/logos_peering_tests.exe"; timeout = 60; } ];
       });
-      libDeps = pkgs: [
+      # `system`, not hostPlatform.system: Android's says "aarch64-linux".
+      libDeps = { pkgs, system }: [
         pkgs.openssl pkgs.nlohmann_json pkgs.libblake3 pkgs.boost
-        logos-protocol.packages.${pkgs.stdenv.hostPlatform.system}.logos-protocol-plain
+        logos-protocol.packages.${system}.logos-protocol-plain
       ];
 
       libpeering = forAllTargets ({ pkgs, system }: import ./nix/libpeering.nix {
@@ -45,7 +53,7 @@
         version = "0.1.0";
         src = libpeering.${system}.src;
         nativeBuildInputs = [ pkgs.cmake pkgs.ninja pkgs.pkg-config ];
-        buildInputs = libDeps pkgs;
+        buildInputs = libDeps { inherit pkgs system; };
         cmakeFlags = [
           "-DLOGOS_PEERING_BUILD_TESTS=OFF"
           "-DLOGOS_MODULE_LOADER_QT_ROOT=${logos-module-loader-qt.packages.${system}.logos-module-loader-qt-lib}"
@@ -90,9 +98,9 @@
         peering_module = peeringModule.packages.${system}.default;
       });
 
-      devShells = forAllSystems ({ pkgs, ... }: {
+      devShells = forAllSystems ({ pkgs, system }: {
         default = pkgs.mkShell {
-          packages = [ pkgs.cmake pkgs.ninja pkgs.pkg-config pkgs.gtest ] ++ libDeps pkgs;
+          packages = [ pkgs.cmake pkgs.ninja pkgs.pkg-config pkgs.gtest ] ++ libDeps { inherit pkgs system; };
         };
       });
     };
