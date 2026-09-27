@@ -18,7 +18,8 @@ jobs:
       targets: libpeering logos_host_remote peering_identity peering_module
       # libpeering's suite (share/logos-tests), one gtest case per process.
       tests: true
-      # The native test leg runs the whole suite, so wine keeps only what needs no sockets.
+      # The native test leg runs the whole suite, so wine keeps only what needs no
+      # sockets, and no DACLs (wine reports none back, so Fs.* is native-only).
       native-smoke: false
       smoke: |
-        run libpeering/bin/logos_peering_tests.exe --gtest_filter=-PeeringService.*:Facade.*
+        run libpeering/bin/logos_peering_tests.exe --gtest_filter=-PeeringService.*:Facade.*:Fs.*
