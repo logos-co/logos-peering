@@ -48,6 +48,10 @@ target_include_directories(logos_peering PUBLIC
 target_link_libraries(logos_peering PUBLIC
     OpenSSL::SSL OpenSSL::Crypto nlohmann_json::nlohmann_json PkgConfig::BLAKE3
     $<BUILD_INTERFACE:logos-protocol::logos_protocol_plain>)
+if(WIN32)
+    # The advertised address (GetAdaptersAddresses, inet_ntop); owner-only DACLs.
+    target_link_libraries(logos_peering PUBLIC iphlpapi ws2_32 advapi32)
+endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(logos_peering PRIVATE -Wall -Wextra -Wpedantic)
 endif()
@@ -63,6 +67,7 @@ if(LOGOS_PEERING_BUILD_TESTS)
         lib/tests/test_crypto.cpp
         lib/tests/test_discovery_key.cpp
         lib/tests/test_enrollment.cpp
+        lib/tests/test_fs.cpp
         lib/tests/test_identity.cpp
         lib/tests/test_invite_store.cpp
         lib/tests/test_invites.cpp

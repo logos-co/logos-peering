@@ -23,17 +23,24 @@
         inherit system;
         pkgs = import nixpkgs { inherit system; };
       });
+      # Plus "x86_64-windows", cross-built with MinGW on x86_64-linux.
+      forAllTargets = logos-nix.lib.forAllTargets;
+
+      # What the Windows runner (logos-windows-ci `tests: true`) runs, one case per process.
+      windowsTests = builtins.toFile "libpeering-tests.json" (builtins.toJSON {
+        suites = [ { name = "libpeering"; exe = "bin/logos_peering_tests.exe"; timeout = 60; } ];
+      });
       libDeps = pkgs: [
         pkgs.openssl pkgs.nlohmann_json pkgs.libblake3 pkgs.boost
         logos-protocol.packages.${pkgs.stdenv.hostPlatform.system}.logos-protocol-plain
       ];
 
-      libpeering = forAllSystems ({ pkgs, system }: import ./nix/libpeering.nix {
-        inherit pkgs;
+      libpeering = forAllTargets ({ pkgs, system }: import ./nix/libpeering.nix {
+        inherit pkgs windowsTests;
         logosProtocol = logos-protocol.packages.${system}.logos-protocol-plain;
       });
 
-      hostRemote = forAllSystems ({ pkgs, system }: pkgs.stdenv.mkDerivation {
+      hostRemote = forAllTargets ({ pkgs, system }: pkgs.stdenv.mkDerivation {
         pname = "logos-host-remote";
         version = "0.1.0";
         src = libpeering.${system}.src;
@@ -70,7 +77,7 @@
           (module.packages.${system} or { });
     in
     {
-      packages = forAllSystems ({ system, ... }:
+      packages = forAllTargets ({ system, ... }:
         { libpeering = libpeering.${system}; default = libpeering.${system};
           logos_host_remote = hostRemote.${system}; }
         // modulePackages "peering_identity" identityModule system

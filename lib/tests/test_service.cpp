@@ -9,6 +9,8 @@
 #include "logos/peering/identity.h"
 #include "logos/peering/invites.h"
 
+#include "owner_only.h"
+
 #include <logos_protocol.h>
 
 #include <gtest/gtest.h>
@@ -23,6 +25,7 @@
 #include <memory>
 #include <sstream>
 #include <mutex>
+#include <random>
 #include <thread>
 
 using namespace logos::peering;
@@ -42,7 +45,7 @@ fs::path freshDir(const std::string& label)
 {
     static std::atomic<int> counter{0};
     const fs::path dir = fs::temp_directory_path()
-        / ("peering-" + label + "-" + std::to_string(::getpid()) + "-" + std::to_string(++counter));
+        / ("peering-" + label + "-" + std::to_string(std::random_device{}()) + "-" + std::to_string(++counter));
     fs::remove_all(dir);
     fs::create_directories(dir);
     return dir;
@@ -929,8 +932,7 @@ TEST(PeeringService, ALocalInvitePairsOverLoopbackAndIsReplaced)
     const fs::path path = b.dir / "link" / "local-invite";
     b.configure(localInviteConfig(path));
     ASSERT_TRUE(waitFor([&] { return fs::exists(path); }));
-    const auto perms = fs::status(path).permissions();
-    EXPECT_EQ(perms & (fs::perms::group_all | fs::perms::others_all), fs::perms::none);
+    EXPECT_TRUE(ownerOnly(path));
     const std::string first = readText(path);
     ASSERT_EQ(first.rfind("logos-pair:v1:", 0), 0u) << first;
 

@@ -6,7 +6,9 @@
 #include <sstream>
 
 #ifdef _WIN32
-#include <io.h>
+#include <windows.h>
+#include <aclapi.h>
+#include <vector>
 #else
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -23,7 +25,70 @@ void setError(std::string* error, const std::string& text)
     if (error) *error = text;
 }
 
-#ifndef _WIN32
+#ifdef _WIN32
+std::string lastError()
+{
+    return "Windows error " + std::to_string(GetLastError());
+}
+
+// What 0600 and 0700 say on POSIX: a DACL whose one entry grants the current
+// user, protected from its parent's inheritable entries.
+class OwnerOnly {
+public:
+    explicit OwnerOnly(bool inheritable)
+    {
+        HANDLE token = nullptr;
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return;
+        DWORD size = 0;
+        GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+        std::vector<unsigned char> user(size);
+        const bool known = size && GetTokenInformation(token, TokenUser, user.data(), size, &size);
+        CloseHandle(token);
+        if (!known) return;
+        EXPLICIT_ACCESSW entry{};
+        entry.grfAccessPermissions = FILE_ALL_ACCESS;
+        entry.grfAccessMode = SET_ACCESS;
+        entry.grfInheritance = inheritable ? SUB_CONTAINERS_AND_OBJECTS_INHERIT : NO_INHERITANCE;
+        entry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        entry.Trustee.TrusteeType = TRUSTEE_IS_USER;
+        entry.Trustee.ptstrName = reinterpret_cast<LPWSTR>(reinterpret_cast<TOKEN_USER*>(user.data())->User.Sid);
+        if (SetEntriesInAclW(1, &entry, nullptr, &acl_) != ERROR_SUCCESS) return;
+        ok_ = InitializeSecurityDescriptor(&descriptor_, SECURITY_DESCRIPTOR_REVISION)
+              && SetSecurityDescriptorDacl(&descriptor_, TRUE, acl_, FALSE)
+              && SetSecurityDescriptorControl(&descriptor_, SE_DACL_PROTECTED, SE_DACL_PROTECTED);
+        attributes_ = {sizeof(SECURITY_ATTRIBUTES), &descriptor_, FALSE};
+    }
+    ~OwnerOnly()
+    {
+        if (acl_) LocalFree(acl_);
+    }
+    OwnerOnly(const OwnerOnly&) = delete;
+    OwnerOnly& operator=(const OwnerOnly&) = delete;
+
+    bool ok() const { return ok_; }
+    SECURITY_ATTRIBUTES* attributes() { return &attributes_; }
+    // Replaces an existing file's or directory's DACL with this one.
+    bool apply(const fs::path& path) const
+    {
+        return ok_ && SetNamedSecurityInfoW(const_cast<wchar_t*>(path.c_str()), SE_FILE_OBJECT,
+                                            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                                            nullptr, nullptr, acl_, nullptr) == ERROR_SUCCESS;
+    }
+
+private:
+    PACL acl_ = nullptr;
+    SECURITY_DESCRIPTOR descriptor_{};
+    SECURITY_ATTRIBUTES attributes_{};
+    bool ok_ = false;
+};
+
+bool writeAll(HANDLE file, const std::string& content)
+{
+    DWORD written = 0;
+    return WriteFile(file, content.data(), static_cast<DWORD>(content.size()), &written, nullptr)
+           && written == content.size();
+}
+#else
 bool writeAll(int fd, const std::string& content)
 {
     const char* cursor = content.data();
@@ -51,11 +116,18 @@ bool ensurePrivateDir(const fs::path& dir, std::string* error)
         setError(error, "cannot create " + dir.string() + ": " + ec.message());
         return false;
     }
+#ifdef _WIN32
+    if (!OwnerOnly(true).apply(dir)) {
+        setError(error, "cannot restrict " + dir.string() + ": " + lastError());
+        return false;
+    }
+#else
     fs::permissions(dir, fs::perms::owner_all, fs::perm_options::replace, ec);
     if (ec) {
         setError(error, "cannot restrict " + dir.string() + ": " + ec.message());
         return false;
     }
+#endif
     return true;
 }
 
@@ -63,19 +135,20 @@ bool writeFileAtomically(const fs::path& path, const std::string& content, std::
 {
     const fs::path temp = path.string() + ".tmp";
 #ifdef _WIN32
-    {
-        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
-        out.write(content.data(), static_cast<std::streamsize>(content.size()));
-        out.flush();
-        if (!out) {
-            setError(error, "cannot write " + temp.string());
-            return false;
-        }
+    OwnerOnly owner(false);
+    DeleteFileW(temp.c_str());
+    const HANDLE file = owner.ok() ? CreateFileW(temp.c_str(), GENERIC_WRITE, 0, owner.attributes(), CREATE_NEW,
+                                                 FILE_ATTRIBUTE_NORMAL, nullptr)
+                                   : INVALID_HANDLE_VALUE;
+    if (file == INVALID_HANDLE_VALUE) {
+        setError(error, "cannot create " + temp.string() + ": " + lastError());
+        return false;
     }
-    std::error_code ec;
-    fs::rename(temp, path, ec);
-    if (ec) {
-        setError(error, "cannot replace " + path.string() + ": " + ec.message());
+    const bool written = writeAll(file, content) && FlushFileBuffers(file);
+    CloseHandle(file);
+    if (!written || !MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        setError(error, "cannot write " + path.string() + ": " + lastError());
+        DeleteFileW(temp.c_str());
         return false;
     }
     return true;
@@ -109,13 +182,18 @@ std::optional<std::string> readFile(const fs::path& path)
 bool appendLine(const fs::path& path, const std::string& line, std::string* error)
 {
 #ifdef _WIN32
-    std::ofstream out(path, std::ios::binary | std::ios::app);
-    out << line << '\n';
-    if (!out) {
-        setError(error, "cannot append to " + path.string());
+    OwnerOnly owner(false);
+    const HANDLE file = owner.ok() ? CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, owner.attributes(),
+                                                 OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr)
+                                   : INVALID_HANDLE_VALUE;
+    if (file == INVALID_HANDLE_VALUE) {
+        setError(error, "cannot open " + path.string() + ": " + lastError());
         return false;
     }
-    return true;
+    const bool ok = writeAll(file, line + "\n");
+    CloseHandle(file);
+    if (!ok) setError(error, "cannot append to " + path.string());
+    return ok;
 #else
     const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
     if (fd < 0) {
