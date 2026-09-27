@@ -12,6 +12,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <set>
 #include <thread>
 
 namespace logos::peering {
@@ -152,6 +153,12 @@ struct Facade::Impl {
     static char* dispatch(const char* method, const char* args, void* userData)
     {
         auto& impl = *static_cast<Impl*>(userData);
+        {
+            // Not in the provider's interface: unknown here as it would be there, and
+            // the session would fail it instead of answering it as unknown.
+            std::lock_guard<std::mutex> lock(impl.mutex);
+            if (!method || !impl.methodNames.count(method)) return nullptr;
+        }
         const auto consumer = consumerForCallerJson(lp_current_caller_json());
         if (!consumer) return failure("unauthorized", "this caller cannot be named upstream", impl.options.name);
         std::string error;
@@ -223,9 +230,14 @@ struct Facade::Impl {
             error = unreachable(runtime);
             return false;
         }
+        std::set<std::string> names;
+        for (const auto& entry : interface)
+            if (entry.is_object() && entry.contains("name") && entry["name"].is_string())
+                names.insert(entry["name"].get<std::string>());
         {
             std::lock_guard<std::mutex> lock(mutex);
             methodsJson = dump(interface);
+            methodNames = std::move(names);
         }
         const int status = lp_provider_register(provider, &Impl::dispatch, &Impl::methods, nullptr, this);
         if (status != LP_OK) {
@@ -319,6 +331,7 @@ struct Facade::Impl {
     std::condition_variable wake;
     bool stopping = false;
     std::string methodsJson = "[]";
+    std::set<std::string> methodNames; // the provider's interface
     std::string wantedState = "connecting";
     std::string wantedReason;
     std::string reportedState;
