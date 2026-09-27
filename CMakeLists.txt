@@ -43,9 +43,11 @@ set_target_properties(logos_peering PROPERTIES EXPORT_NAME peering)
 target_include_directories(logos_peering PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/lib/include>
     $<INSTALL_INTERFACE:include>)
+# Installed, it names no lp_* runtime: its consumer links one, so a process that has
+# the shared runtime (liblogos) never gets a static copy beside it.
 target_link_libraries(logos_peering PUBLIC
     OpenSSL::SSL OpenSSL::Crypto nlohmann_json::nlohmann_json PkgConfig::BLAKE3
-    logos-protocol::logos_protocol_plain)
+    $<BUILD_INTERFACE:logos-protocol::logos_protocol_plain>)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(logos_peering PRIVATE -Wall -Wextra -Wpedantic)
 endif()

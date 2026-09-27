@@ -240,6 +240,8 @@ struct Dialer {
 
     Dialer(Runtime& r, std::string name) : runtime(r), import(std::move(name))
     {
+        // Like a facade, it calls as its import from a token store of its own.
+        EXPECT_EQ(lp_token_isolate_identity(import.c_str()), LP_OK);
         EXPECT_TRUE(credential.obtain(runtime, import, "client"));
     }
 
@@ -295,7 +297,9 @@ struct PeeringProvider {
         EXPECT_EQ(lp_provider_save_token(provider, facade.c_str(), token.c_str()), LP_OK);
         EXPECT_EQ(lp_provider_register(provider, &PeeringProvider::dispatch, &PeeringProvider::methods,
                                        nullptr, this), LP_OK);
-        EXPECT_EQ(lp_token_save(name.c_str(), token.c_str()), LP_OK);
+        // The facade calls as its import, from its own token store.
+        EXPECT_EQ(lp_token_isolate_identity(facade.c_str()), LP_OK);
+        EXPECT_EQ(lp_token_save_for(facade.c_str(), name.c_str(), token.c_str()), LP_OK);
     }
 
     ~PeeringProvider() { lp_provider_destroy(provider); }
