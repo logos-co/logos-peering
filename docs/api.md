@@ -26,7 +26,7 @@ Callable only by `peering_module`.
 | `{kind:host}` (the engine) | engine methods; with `runtime_control` on, the host methods for `core_service`, which it hosts |
 | `{kind:module,name:<shell>}` (the shell named in `configure`) | management, read and write |
 | `{kind:operator,name:N}`, a local operator (`auto` included) | management, read and write |
-| `{kind:operator,name:@peer:<uuid>:<consumer>}`, a remote consumer's call core_service forwarded | management, read only |
+| `{kind:operator,name:@peer:*}`, a remote consumer's call core_service forwarded (it forwards none here) | management, read only |
 | `{kind:module,name:X}`, X a loaded export (`exportLoaded`) | host methods |
 | `{kind:module,name:core_service}` with `runtime_control` on | host methods (the engine calls them as the host) |
 | `{kind:module,name:F}`, F a loaded facade (`facadeLoaded`) | facade methods, and `issueCertificate("client")` |
@@ -151,6 +151,8 @@ root is the chain's, and the name is valid. Its caller is
 `{kind:"remote", peer:<uuid>, name:<consumer>}`, for at most an hour, with the peer's
 revocation generation. Removing the peer ends it. core_service then decides each call with
 the remote policy: `{"<uuid>/logosctl": {"core_service": ["getStatus", "listModules"]}}`.
+A call it forwards (`callModuleMethod`) needs a grant on the target method too, and never
+reaches the runtime's own modules, this one included.
 
 Only `createInvite("runtime-control", …)` enrolls a runtime for it; its redemption waits
 for `confirmPairing` here, showing the redeemer's display ID. A tool with no runtime of its
