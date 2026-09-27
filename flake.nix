@@ -23,12 +23,20 @@
         inherit system;
         pkgs = import nixpkgs { inherit system; };
       });
+      # Plus "x86_64-windows", cross-built with MinGW on x86_64-linux.
+      forAllTargets = logos-nix.lib.forAllTargets;
+      isWindows = pkgs: pkgs.stdenv.hostPlatform.isWindows;
+
+      # What the Windows runner (logos-windows-ci `tests: true`) runs, one case per process.
+      windowsTests = builtins.toFile "libpeering-tests.json" (builtins.toJSON {
+        suites = [ { name = "libpeering"; exe = "bin/logos_peering_tests.exe"; timeout = 60; } ];
+      });
       libDeps = pkgs: [
         pkgs.openssl pkgs.nlohmann_json pkgs.libblake3 pkgs.boost
         logos-protocol.packages.${pkgs.stdenv.hostPlatform.system}.logos-protocol-plain
       ];
 
-      libpeering = forAllSystems ({ pkgs, ... }: pkgs.stdenv.mkDerivation {
+      libpeering = forAllTargets ({ pkgs, ... }: pkgs.stdenv.mkDerivation {
         pname = "logos-libpeering";
         version = "0.1.0";
         src = lib.cleanSourceWith {
@@ -38,11 +46,19 @@
         nativeBuildInputs = [ pkgs.cmake pkgs.ninja pkgs.pkg-config ];
         buildInputs = libDeps pkgs ++ [ pkgs.gtest ];
         propagatedBuildInputs = libDeps pkgs;
-        cmakeFlags = [ "-DLOGOS_PEERING_BUILD_TESTS=ON" ];
-        doCheck = true;
+        cmakeFlags = [ "-DLOGOS_PEERING_BUILD_TESTS=ON" ]
+          # A PE cannot run on the build machine: nothing is discovered or run here.
+          ++ lib.optional (isWindows pkgs) "-DCMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE=PRE_TEST";
+        doCheck = !isWindows pkgs;
+        # A Windows box runs them instead, from the manifest.
+        postInstall = lib.optionalString (isWindows pkgs) ''
+          mkdir -p $out/bin $out/share/logos-tests
+          cp logos_peering_tests.exe $out/bin/
+          cp ${windowsTests} $out/share/logos-tests/libpeering.json
+        '';
       });
 
-      hostRemote = forAllSystems ({ pkgs, system }: pkgs.stdenv.mkDerivation {
+      hostRemote = forAllTargets ({ pkgs, system }: pkgs.stdenv.mkDerivation {
         pname = "logos-host-remote";
         version = "0.1.0";
         src = libpeering.${system}.src;
@@ -79,7 +95,7 @@
           (module.packages.${system} or { });
     in
     {
-      packages = forAllSystems ({ system, ... }:
+      packages = forAllTargets ({ system, ... }:
         { libpeering = libpeering.${system}; default = libpeering.${system};
           logos_host_remote = hostRemote.${system}; }
         // modulePackages "peering_identity" identityModule system

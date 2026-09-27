@@ -25,8 +25,13 @@
 #include <mutex>
 #include <set>
 #include <thread>
+#include <vector>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
+#else
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <net/if.h>
@@ -151,6 +156,25 @@ std::string guessAddress()
     freeifaddrs(list);
     return found;
 #else
+    ULONG size = 16 * 1024;
+    std::vector<unsigned char> buffer;
+    ULONG rc = ERROR_BUFFER_OVERFLOW;
+    const ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    for (int attempt = 0; attempt < 3 && rc == ERROR_BUFFER_OVERFLOW; ++attempt) {
+        buffer.resize(size);
+        rc = GetAdaptersAddresses(AF_INET, flags, nullptr,
+                                  reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data()), &size);
+    }
+    if (rc != NO_ERROR) return {};
+    for (auto* a = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data()); a; a = a->Next) {
+        if (a->OperStatus != IfOperStatusUp || a->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+        for (auto* u = a->FirstUnicastAddress; u; u = u->Next) {
+            const auto* in = reinterpret_cast<const sockaddr_in*>(u->Address.lpSockaddr);
+            char text[INET_ADDRSTRLEN] = {};
+            if (in && in->sin_family == AF_INET && inet_ntop(AF_INET, &in->sin_addr, text, sizeof text))
+                return text;
+        }
+    }
     return {};
 #endif
 }

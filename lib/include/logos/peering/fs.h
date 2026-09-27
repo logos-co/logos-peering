@@ -6,16 +6,17 @@
 
 namespace logos::peering {
 
-// Creates `dir` with its parents and restricts it to the owner.
+// Creates `dir` with its parents and restricts it to the owner (on Windows, a DACL
+// granting the current user alone). Files below are private the same way.
 bool ensurePrivateDir(const std::filesystem::path& dir, std::string* error = nullptr);
 
-// Writes a 0600 temporary file beside `path`, syncs it, then renames it over `path`.
+// Writes a private (0600) temporary file beside `path`, syncs it, then renames it over `path`.
 bool writeFileAtomically(const std::filesystem::path& path, const std::string& content,
                          std::string* error = nullptr);
 
 std::optional<std::string> readFile(const std::filesystem::path& path);
 
-// Appends one line to a 0600 file, creating it if needed.
+// Appends one line to a private (0600) file, creating it if needed.
 bool appendLine(const std::filesystem::path& path, const std::string& line,
                 std::string* error = nullptr);
 

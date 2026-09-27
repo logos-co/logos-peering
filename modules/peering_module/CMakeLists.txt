@@ -22,3 +22,6 @@ find_package(OpenSSL 3.0 REQUIRED)
 find_library(BLAKE3_LIBRARY NAMES blake3 REQUIRED)
 target_link_libraries(peering_module_module_plugin PRIVATE
     OpenSSL::SSL OpenSSL::Crypto ${BLAKE3_LIBRARY})
+if(WIN32)
+    target_link_libraries(peering_module_module_plugin PRIVATE iphlpapi ws2_32 advapi32)
+endif()

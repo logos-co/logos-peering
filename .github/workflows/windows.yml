@@ -1,0 +1,24 @@
+name: Windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    uses: logos-co/logos-windows-ci/.github/workflows/windows-ci.yml@v1
+    secrets: inherit
+    with:
+      targets: libpeering logos_host_remote peering_identity peering_module
+      # libpeering's suite (share/logos-tests), one gtest case per process.
+      tests: true
+      # The native test leg runs the whole suite, so wine keeps only what needs no sockets.
+      native-smoke: false
+      smoke: |
+        run libpeering/bin/logos_peering_tests.exe --gtest_filter=-PeeringService.*:Facade.*
