@@ -227,7 +227,7 @@ struct ExportHost {
         return nullptr;
     }
 
-    static char* methods(void*) { return heap("[]"); }
+    static char* methods(void*) { return heap(R"([{"type":"method","name":"whoami"}])"); }
 };
 
 // Stands in for A's facade: dials B's host with what requestRoute returned.
@@ -732,6 +732,30 @@ TEST(Facade, ServesAnImportAsItsConsumers)
 
     const json who = callFacade(facade, "wallet", "whoami");
     EXPECT_EQ(who, json({{"kind", "remote"}, {"peer", a.id()}, {"name", "wallet"}}));
+    facade.stop();
+}
+
+// Like the provider itself: a method outside its interface is unknown, with no call upstream.
+TEST(Facade, AMethodTheProviderLacksIsUnknownHere)
+{
+    Runtime a("laptop");
+    Runtime b("office");
+    a.configure();
+    b.configure();
+    pairByInvite(a, b);
+    exportEcho(b, a, "wallet");
+    ExportHost host(b, "echo_module");
+    importEcho(a, b, {"wallet"});
+    PeeringProvider peering(a, "peering_a", "echo", "facade-token");
+    Facade facade(facadeOptions());
+    std::string error;
+    ASSERT_TRUE(facade.start(error)) << error;
+    ASSERT_TRUE(waitFor([&] { return importState(a) == "ready"; }));
+
+    const auto routesBefore = b.manage("routes")["served"].size();
+    EXPECT_EQ(callFacade(facade, "wallet", "noSuchMethod"), json(nullptr));
+    EXPECT_EQ(b.manage("routes")["served"].size(), routesBefore) << "it went upstream";
+    EXPECT_EQ(callFacade(facade, "wallet", "whoami")["name"], "wallet");
     facade.stop();
 }
 
